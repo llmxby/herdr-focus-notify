@@ -1,0 +1,477 @@
+use serde::Deserialize;
+use std::collections::{hash_map::DefaultHasher, HashMap};
+use std::env;
+use std::fs;
+use std::hash::{Hash, Hasher};
+use std::io;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::OnceLock;
+
+static CONFIG_ENV: OnceLock<HashMap<String, String>> = OnceLock::new();
+
+#[derive(Debug, Deserialize)]
+struct PluginEvent {
+    data: Option<EventData>,
+}
+
+#[derive(Debug, Deserialize)]
+struct EventData {
+    pane_id: Option<String>,
+    workspace_id: Option<String>,
+    workspace: Option<String>,
+    tab: Option<String>,
+    agent_status: Option<String>,
+    agent: Option<String>,
+    display_agent: Option<String>,
+    title: Option<String>,
+    custom_status: Option<String>,
+    state_labels: Option<StateLabels>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StateLabels {
+    error: Option<String>,
+    task: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FocusNotification {
+    pane_id: String,
+    status: String,
+    title: String,
+    body: String,
+    group: String,
+}
+
+fn main() {
+    if let Err(err) = run() {
+        if is_debug_enabled() {
+            eprintln!("herdr-focus-notify: {err}");
+        }
+    }
+}
+
+fn run() -> Result<(), String> {
+    if !is_enabled() {
+        return Ok(());
+    }
+
+    let notification = if env::args().any(|arg| arg == "--test") {
+        FocusNotification {
+            pane_id: "test-pane".to_string(),
+            status: "blocked".to_string(),
+            title: "Herdr Focus Notify test".to_string(),
+            body: "Click to run: herdr agent focus test-pane".to_string(),
+            group: "herdr-test-pane".to_string(),
+        }
+    } else {
+        let event_json = match env::var("HERDR_PLUGIN_EVENT_JSON") {
+            Ok(value) => value,
+            Err(_) => return Ok(()),
+        };
+
+        match notification_from_event_json(&event_json)? {
+            Some(notification) => notification,
+            None => return Ok(()),
+        }
+    };
+
+    if !status_is_enabled(&notification.status) {
+        return Ok(());
+    }
+
+    let herdr_bin = config_var("HERDR_BIN_PATH").unwrap_or_else(|| "herdr".to_string());
+    let script_path = write_focus_script(&notification.pane_id, &herdr_bin)
+        .map_err(|err| format!("failed to write focus script: {err}"))?;
+
+    send_notification(&notification, &script_path)
+        .map_err(|err| format!("failed to send notification: {err}"))?;
+
+    Ok(())
+}
+
+fn notification_from_event_json(json: &str) -> Result<Option<FocusNotification>, String> {
+    let event: PluginEvent =
+        serde_json::from_str(json).map_err(|err| format!("invalid event json: {err}"))?;
+    let Some(data) = event.data else {
+        return Ok(None);
+    };
+
+    let status = data
+        .agent_status
+        .as_deref()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+
+    if status != "blocked" && status != "done" {
+        return Ok(None);
+    }
+
+    let Some(pane_id) = data
+        .pane_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+    else {
+        return Ok(None);
+    };
+
+    let agent = first_non_empty([data.display_agent.as_deref(), data.agent.as_deref()])
+        .unwrap_or("Agent")
+        .to_string();
+
+    let title = match status.as_str() {
+        "blocked" => format!("{agent} needs attention"),
+        "done" => format!("{agent} finished"),
+        _ => unreachable!("status already filtered"),
+    };
+
+    let body = notification_body(&data);
+    let group = format!("herdr-{}", sanitize_group_id(&pane_id));
+
+    Ok(Some(FocusNotification {
+        pane_id,
+        status,
+        title,
+        body,
+        group,
+    }))
+}
+
+fn notification_body(data: &EventData) -> String {
+    let mut lines = Vec::new();
+
+    if let Some(text) = first_non_empty([
+        data.custom_status.as_deref(),
+        data.state_labels
+            .as_ref()
+            .and_then(|labels| labels.error.as_deref()),
+        data.state_labels
+            .as_ref()
+            .and_then(|labels| labels.task.as_deref()),
+        data.title.as_deref(),
+    ]) {
+        lines.push(truncate(text, 220));
+    }
+
+    let workspace = first_non_empty([data.workspace.as_deref(), data.workspace_id.as_deref()]);
+    let tab = data.tab.as_deref().filter(|value| !value.trim().is_empty());
+
+    if workspace.is_some() || tab.is_some() {
+        let mut location = String::from("Location:");
+        if let Some(workspace) = workspace {
+            location.push(' ');
+            location.push_str(workspace);
+        }
+        if let Some(tab) = tab {
+            location.push_str(" / ");
+            location.push_str(tab);
+        }
+        lines.push(location);
+    }
+
+    if lines.is_empty() {
+        "Click to focus this Herdr agent pane.".to_string()
+    } else {
+        lines.join("\n")
+    }
+}
+
+fn first_non_empty<const N: usize>(values: [Option<&str>; N]) -> Option<&str> {
+    values
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|value| !value.is_empty())
+}
+
+fn truncate(value: &str, max_chars: usize) -> String {
+    let trimmed = value.trim();
+    if trimmed.chars().count() <= max_chars {
+        return trimmed.to_string();
+    }
+
+    let mut output: String = trimmed.chars().take(max_chars.saturating_sub(3)).collect();
+    output.push_str("...");
+    output
+}
+
+fn status_is_enabled(status: &str) -> bool {
+    let configured =
+        config_var("HERDR_FOCUS_NOTIFY_STATUSES").unwrap_or_else(|| "blocked,done".to_string());
+
+    configured
+        .split(',')
+        .map(|value| value.trim().to_ascii_lowercase())
+        .any(|value| value == status)
+}
+
+fn is_enabled() -> bool {
+    config_var("HERDR_FOCUS_NOTIFY_ENABLED")
+        .map(|value| {
+            !matches!(
+                value.to_ascii_lowercase().as_str(),
+                "0" | "false" | "no" | "off"
+            )
+        })
+        .unwrap_or(true)
+}
+
+fn is_debug_enabled() -> bool {
+    config_var("HERDR_FOCUS_NOTIFY_DEBUG")
+        .map(|value| {
+            matches!(
+                value.to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn config_var(key: &str) -> Option<String> {
+    env::var(key)
+        .ok()
+        .or_else(|| CONFIG_ENV.get_or_init(load_config_env).get(key).cloned())
+}
+
+fn load_config_env() -> HashMap<String, String> {
+    let Some(config_dir) = env::var_os("HERDR_PLUGIN_CONFIG_DIR") else {
+        return HashMap::new();
+    };
+
+    let path = PathBuf::from(config_dir).join(".env");
+    let Ok(content) = fs::read_to_string(path) else {
+        return HashMap::new();
+    };
+
+    parse_env_file(&content)
+}
+
+fn parse_env_file(content: &str) -> HashMap<String, String> {
+    let mut values = HashMap::new();
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        let Some((key, value)) = trimmed.split_once('=') else {
+            continue;
+        };
+
+        let key = key.trim();
+        if key.is_empty() {
+            continue;
+        }
+
+        values.insert(key.to_string(), unquote_env_value(value.trim()).to_string());
+    }
+
+    values
+}
+
+fn unquote_env_value(value: &str) -> &str {
+    let bytes = value.as_bytes();
+    if bytes.len() >= 2
+        && ((bytes[0] == b'"' && bytes[bytes.len() - 1] == b'"')
+            || (bytes[0] == b'\'' && bytes[bytes.len() - 1] == b'\''))
+    {
+        &value[1..value.len() - 1]
+    } else {
+        value
+    }
+}
+
+fn write_focus_script(pane_id: &str, herdr_bin: &str) -> io::Result<PathBuf> {
+    let state_dir = env::var_os("HERDR_PLUGIN_STATE_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| env::temp_dir().join("herdr-focus-notify"));
+    fs::create_dir_all(&state_dir)?;
+
+    let mut hasher = DefaultHasher::new();
+    pane_id.hash(&mut hasher);
+    herdr_bin.hash(&mut hasher);
+
+    let script_path = state_dir.join(format!("focus-{:016x}.sh", hasher.finish()));
+    let script = format!(
+        "#!/bin/sh\nexec {} agent focus {}\n",
+        shell_quote(herdr_bin),
+        shell_quote(pane_id)
+    );
+
+    fs::write(&script_path, script)?;
+    make_executable(&script_path)?;
+
+    Ok(script_path)
+}
+
+#[cfg(unix)]
+fn make_executable(path: &Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut permissions = fs::metadata(path)?.permissions();
+    permissions.set_mode(0o700);
+    fs::set_permissions(path, permissions)
+}
+
+#[cfg(not(unix))]
+fn make_executable(_path: &Path) -> io::Result<()> {
+    Ok(())
+}
+
+fn send_notification(notification: &FocusNotification, script_path: &Path) -> io::Result<()> {
+    let notifier = config_var("HERDR_FOCUS_NOTIFY_NOTIFIER")
+        .unwrap_or_else(|| "terminal-notifier".to_string());
+    let script_path_string = script_path.to_string_lossy();
+    let execute = format!("sh {}", shell_quote(script_path_string.as_ref()));
+
+    let result = Command::new(notifier)
+        .arg("-title")
+        .arg(&notification.title)
+        .arg("-message")
+        .arg(&notification.body)
+        .arg("-group")
+        .arg(&notification.group)
+        .arg("-execute")
+        .arg(execute)
+        .status();
+
+    match result {
+        Ok(_status) => Ok(()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            if is_debug_enabled() {
+                eprintln!("herdr-focus-notify: terminal-notifier not found");
+            }
+            Ok(())
+        }
+        Err(err) => Err(err),
+    }
+}
+
+fn sanitize_group_id(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
+fn shell_quote(value: &str) -> String {
+    let mut quoted = String::from("'");
+    for ch in value.chars() {
+        if ch == '\'' {
+            quoted.push_str("'\\''");
+        } else {
+            quoted.push(ch);
+        }
+    }
+    quoted.push('\'');
+    quoted
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builds_blocked_notification_from_event() {
+        let json = r#"{
+            "event": "pane.agent_status_changed",
+            "data": {
+                "pane_id": "w1:p3",
+                "workspace_id": "herdr",
+                "agent_status": "blocked",
+                "agent": "codex",
+                "display_agent": "Codex",
+                "custom_status": "Needs an answer"
+            }
+        }"#;
+
+        let notification = notification_from_event_json(json).unwrap().unwrap();
+
+        assert_eq!(notification.pane_id, "w1:p3");
+        assert_eq!(notification.status, "blocked");
+        assert_eq!(notification.title, "Codex needs attention");
+        assert!(notification.body.contains("Needs an answer"));
+        assert!(notification.body.contains("Location: herdr"));
+        assert_eq!(notification.group, "herdr-w1-p3");
+    }
+
+    #[test]
+    fn builds_done_notification_from_title() {
+        let json = r#"{
+            "data": {
+                "pane_id": "p1",
+                "agent_status": "done",
+                "agent": "Codex",
+                "title": "Implement plugin"
+            }
+        }"#;
+
+        let notification = notification_from_event_json(json).unwrap().unwrap();
+
+        assert_eq!(notification.status, "done");
+        assert_eq!(notification.title, "Codex finished");
+        assert_eq!(notification.body, "Implement plugin");
+    }
+
+    #[test]
+    fn ignores_other_statuses() {
+        let json = r#"{
+            "data": {
+                "pane_id": "p1",
+                "agent_status": "running",
+                "agent": "Codex"
+            }
+        }"#;
+
+        assert!(notification_from_event_json(json).unwrap().is_none());
+    }
+
+    #[test]
+    fn ignores_missing_pane_id() {
+        let json = r#"{
+            "data": {
+                "agent_status": "blocked",
+                "agent": "Codex"
+            }
+        }"#;
+
+        assert!(notification_from_event_json(json).unwrap().is_none());
+    }
+
+    #[test]
+    fn shell_quote_handles_apostrophes() {
+        assert_eq!(shell_quote("/tmp/it's ok"), "'/tmp/it'\\''s ok'");
+    }
+
+    #[test]
+    fn parses_plugin_env_file() {
+        let values = parse_env_file(
+            r#"
+            # comment
+            HERDR_FOCUS_NOTIFY_ENABLED=1
+            HERDR_FOCUS_NOTIFY_NOTIFIER="/opt/homebrew/bin/terminal-notifier"
+            HERDR_FOCUS_NOTIFY_STATUSES='blocked,done'
+            "#,
+        );
+
+        assert_eq!(
+            values.get("HERDR_FOCUS_NOTIFY_NOTIFIER").unwrap(),
+            "/opt/homebrew/bin/terminal-notifier"
+        );
+        assert_eq!(
+            values.get("HERDR_FOCUS_NOTIFY_STATUSES").unwrap(),
+            "blocked,done"
+        );
+    }
+}
