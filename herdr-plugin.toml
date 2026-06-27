@@ -1,4 +1,4 @@
-id = "local.herdr-focus-notify"
+id = "herdr-focus-notify"
 name = "Herdr Focus Notify"
 version = "0.1.1"
 min_herdr_version = "0.7.0"

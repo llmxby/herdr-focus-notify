@@ -37,7 +37,7 @@ The plugin requires Herdr `0.7.0` or newer.
 Run the test action:
 
 ```bash
-herdr plugin action invoke test --plugin local.herdr-focus-notify
+herdr plugin action invoke test --plugin herdr-focus-notify
 ```
 
 ## Troubleshooting
