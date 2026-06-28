@@ -112,9 +112,7 @@ fn resolve_herdr_bin() -> String {
 fn resolve_notifier_bin() -> String {
     config_var("HERDR_FOCUS_NOTIFY_NOTIFIER")
         .or_else(|| find_executable("alerter", alerter_candidate_paths()))
-        .or_else(|| {
-            find_executable("terminal-notifier", terminal_notifier_candidate_paths())
-        })
+        .or_else(|| find_executable("terminal-notifier", terminal_notifier_candidate_paths()))
         .unwrap_or_else(|| "alerter".to_string())
 }
 
@@ -384,6 +382,18 @@ fn alerter_timeout_secs() -> u64 {
     parse_timeout_secs(config_var("HERDR_FOCUS_NOTIFY_TIMEOUT"))
 }
 
+fn activate_app() -> Option<String> {
+    config_var("HERDR_FOCUS_NOTIFY_ACTIVATE_APP")
+}
+
+fn activate_bundle_id() -> Option<String> {
+    config_var("HERDR_FOCUS_NOTIFY_ACTIVATE_BUNDLE_ID")
+}
+
+fn alerter_sender_bundle_id() -> Option<String> {
+    config_var("HERDR_FOCUS_NOTIFY_SENDER")
+}
+
 fn parse_timeout_secs(raw: Option<String>) -> u64 {
     raw.and_then(|v| v.trim().parse::<u64>().ok())
         .unwrap_or(3600)
@@ -456,11 +466,19 @@ fn write_focus_script(
     notification.pane_id.hash(&mut hasher);
     herdr_bin.hash(&mut hasher);
     notifier_bin.hash(&mut hasher);
+    activate_app().hash(&mut hasher);
+    activate_bundle_id().hash(&mut hasher);
+    alerter_sender_bundle_id().hash(&mut hasher);
     is_debug_enabled().hash(&mut hasher);
 
     let script_path = state_dir.join(format!("focus-{:016x}.sh", hasher.finish()));
     let debug_log_path = is_debug_enabled().then(|| state_dir.join("focus-click.log"));
-    let script = focus_script_content(notification, herdr_bin, notifier_bin, debug_log_path.as_deref());
+    let script = focus_script_content(
+        notification,
+        herdr_bin,
+        notifier_bin,
+        debug_log_path.as_deref(),
+    );
 
     fs::write(&script_path, script)?;
     make_executable(&script_path)?;
@@ -480,9 +498,16 @@ fn focus_script_content(
             herdr_bin,
             notifier_bin,
             alerter_timeout_secs(),
+            alerter_sender_bundle_id().as_deref(),
+            activation_command().as_deref(),
             debug_log_path,
         ),
-        _ => terminal_notifier_focus_script(&notification.pane_id, herdr_bin, debug_log_path),
+        _ => terminal_notifier_focus_script(
+            &notification.pane_id,
+            herdr_bin,
+            activation_command().as_deref(),
+            debug_log_path,
+        ),
     }
 }
 
@@ -491,6 +516,8 @@ fn alerter_focus_script(
     herdr_bin: &str,
     notifier_bin: &str,
     timeout_secs: u64,
+    sender_bundle_id: Option<&str>,
+    activate_command: Option<&str>,
     debug_log_path: Option<&Path>,
 ) -> String {
     let title_q = shell_quote(&notification.title);
@@ -499,15 +526,18 @@ fn alerter_focus_script(
     let pane_q = shell_quote(&notification.pane_id);
     let herdr_q = shell_quote(herdr_bin);
     let notifier_q = shell_quote(notifier_bin);
+    let sender_args = sender_bundle_id
+        .map(|sender| format!(" --sender {}", shell_quote(sender)))
+        .unwrap_or_default();
     let timeout_args = if timeout_secs > 0 {
-        format!("--timeout {}", timeout_secs)
+        format!(" --timeout {}", timeout_secs)
     } else {
         String::new()
     };
 
     let mut script = String::from("#!/bin/sh\n");
     script.push_str(&format!(
-        "result=$({notifier} --title {title} --message {body} --group {group} --actions {action} --close-label {close_label} {timeout_args} 2>/dev/null)\n",
+        "result=$({notifier} --title {title} --message {body} --group {group} --actions {action} --close-label {close_label}{timeout_args}{sender_args} 2>/dev/null)\n",
         notifier = notifier_q,
         title = title_q,
         body = body_q,
@@ -515,6 +545,7 @@ fn alerter_focus_script(
         action = shell_quote("Focus"),
         close_label = shell_quote("Dismiss"),
         timeout_args = timeout_args,
+        sender_args = sender_args,
     ));
 
     match debug_log_path {
@@ -527,7 +558,8 @@ fn alerter_focus_script(
             script.push_str("status=0\n");
             script.push_str("case \"$result\" in\n");
             script.push_str(&format!(
-                "  Focus|@ACTIONCLICKED|@CONTENTCLICKED)\n    {herdr} agent focus {pane} >> {log} 2>&1\n    status=$?\n    printf '%s focus exited %s\\n' \"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\" \"$status\" >> {log} 2>&1\n    ;;\n",
+                "  Focus|@ACTIONCLICKED|@CONTENTCLICKED)\n{activate}    {herdr} agent focus {pane} >> {log} 2>&1\n    status=$?\n    printf '%s focus exited %s\\n' \"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\" \"$status\" >> {log} 2>&1\n    ;;\n",
+                activate = activation_script(activate_command, Some(log_q.as_str())),
                 herdr = herdr_q,
                 pane = pane_q,
                 log = log_q,
@@ -538,7 +570,8 @@ fn alerter_focus_script(
         None => {
             script.push_str("case \"$result\" in\n");
             script.push_str(&format!(
-                "  Focus|@ACTIONCLICKED|@CONTENTCLICKED)\n    exec {herdr} agent focus {pane}\n    ;;\n",
+                "  Focus|@ACTIONCLICKED|@CONTENTCLICKED)\n{activate}    exec {herdr} agent focus {pane}\n    ;;\n",
+                activate = activation_script(activate_command, None),
                 herdr = herdr_q,
                 pane = pane_q,
             ));
@@ -549,9 +582,43 @@ fn alerter_focus_script(
     script
 }
 
+fn activation_script(activate_command: Option<&str>, log_q: Option<&str>) -> String {
+    let Some(command) = activate_command else {
+        return String::new();
+    };
+
+    match log_q {
+        Some(log_q) => format!(
+            "    {command} >> {log} 2>&1\n    activate_status=$?\n    printf '%s activate exited %s\\n' \"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\" \"$activate_status\" >> {log} 2>&1\n",
+            command = command,
+            log = log_q,
+        ),
+        None => format!("    {command} >/dev/null 2>&1\n", command = command),
+    }
+}
+
+fn activation_command() -> Option<String> {
+    activation_command_from(activate_app(), activate_bundle_id())
+}
+
+fn activation_command_from(app: Option<String>, bundle_id: Option<String>) -> Option<String> {
+    if let Some(bundle_id) = bundle_id {
+        return Some(format!("open -b {}", shell_quote(&bundle_id)));
+    }
+
+    app.map(|app| {
+        if app.contains('/') {
+            format!("open {}", shell_quote(&app))
+        } else {
+            format!("open -a {}", shell_quote(&app))
+        }
+    })
+}
+
 fn terminal_notifier_focus_script(
     pane_id: &str,
     herdr_bin: &str,
+    activate_command: Option<&str>,
     debug_log_path: Option<&Path>,
 ) -> String {
     let mut script = String::from("#!/bin/sh\n");
@@ -563,6 +630,8 @@ fn terminal_notifier_focus_script(
             shell_quote(&message),
             shell_quote(debug_log_path.to_string_lossy().as_ref())
         ));
+        let log_q = shell_quote(debug_log_path.to_string_lossy().as_ref());
+        script.push_str(&activation_script(activate_command, Some(log_q.as_str())));
         script.push_str(&format!(
             "{} agent focus {} >> {} 2>&1\n",
             shell_quote(herdr_bin),
@@ -578,6 +647,7 @@ fn terminal_notifier_focus_script(
         return script;
     }
 
+    script.push_str(&activation_script(activate_command, None));
     script.push_str(&format!(
         "exec {} agent focus {}\n",
         shell_quote(herdr_bin),
@@ -827,6 +897,7 @@ mod tests {
         assert!(script.contains("--group 'herdr-w1-p3'"));
         assert!(script.contains("--actions 'Focus'"));
         assert!(script.contains("--close-label 'Dismiss'"));
+        assert!(script.contains("Focus|@ACTIONCLICKED|@CONTENTCLICKED)"));
         assert!(script.contains("exec '/usr/local/bin/herdr' agent focus 'w1:p3'"));
     }
 
@@ -837,6 +908,8 @@ mod tests {
             "/usr/local/bin/herdr",
             "/opt/homebrew/bin/alerter",
             120,
+            None,
+            None,
             None,
         );
 
@@ -851,6 +924,8 @@ mod tests {
             "/opt/homebrew/bin/alerter",
             0,
             None,
+            None,
+            None,
         );
 
         assert!(!script.contains("--timeout"));
@@ -863,6 +938,8 @@ mod tests {
             "/usr/local/bin/herdr",
             "/opt/homebrew/bin/alerter",
             1800,
+            None,
+            None,
             Some(Path::new("/tmp/click.log")),
         );
 
@@ -870,6 +947,86 @@ mod tests {
         assert!(script.contains(">> '/tmp/click.log' 2>&1"));
         assert!(script.contains("status=0\n"));
         assert!(script.contains("focus exited %s"));
+        assert!(script.contains("Focus|@ACTIONCLICKED|@CONTENTCLICKED)"));
+        assert!(!script.contains("content click ignored"));
+    }
+
+    #[test]
+    fn alerter_script_includes_activation_when_configured() {
+        let script = alerter_focus_script(
+            &sample_notification(),
+            "/usr/local/bin/herdr",
+            "/opt/homebrew/bin/alerter",
+            3600,
+            None,
+            Some("open -a 'kitty'"),
+            None,
+        );
+
+        assert!(!script.contains("--sender"));
+        assert!(script.contains("open -a 'kitty' >/dev/null 2>&1"));
+        assert!(script.contains("exec '/usr/local/bin/herdr' agent focus 'w1:p3'"));
+    }
+
+    #[test]
+    fn alerter_script_includes_sender_only_when_explicitly_configured() {
+        let script = alerter_focus_script(
+            &sample_notification(),
+            "/usr/local/bin/herdr",
+            "/opt/homebrew/bin/alerter",
+            3600,
+            Some("net.kovidgoyal.kitty"),
+            None,
+            None,
+        );
+
+        assert!(script.contains("--sender 'net.kovidgoyal.kitty'"));
+    }
+
+    #[test]
+    fn terminal_notifier_script_includes_activation_when_configured() {
+        let script = terminal_notifier_focus_script(
+            "w1:p3",
+            "/usr/local/bin/herdr",
+            Some("open -a 'kitty'"),
+            None,
+        );
+
+        assert!(script.contains("open -a 'kitty' >/dev/null 2>&1"));
+        assert!(script.contains("exec '/usr/local/bin/herdr' agent focus 'w1:p3'"));
+    }
+
+    #[test]
+    fn terminal_notifier_debug_script_includes_activation_when_configured() {
+        let script = terminal_notifier_focus_script(
+            "w1:p3",
+            "/usr/local/bin/herdr",
+            Some("open -a 'kitty'"),
+            Some(Path::new("/tmp/click.log")),
+        );
+
+        assert!(script.contains("open -a 'kitty' >> '/tmp/click.log' 2>&1"));
+        assert!(script.contains("activate exited %s"));
+        assert!(script.contains("'/usr/local/bin/herdr' agent focus 'w1:p3'"));
+    }
+
+    #[test]
+    fn activation_command_opens_app_names_paths_and_bundle_ids() {
+        assert_eq!(
+            activation_command_from(Some("kitty".to_string()), None),
+            Some("open -a 'kitty'".to_string())
+        );
+        assert_eq!(
+            activation_command_from(Some("/Applications/kitty.app".to_string()), None),
+            Some("open '/Applications/kitty.app'".to_string())
+        );
+        assert_eq!(
+            activation_command_from(
+                Some("kitty".to_string()),
+                Some("net.kovidgoyal.kitty".to_string())
+            ),
+            Some("open -b 'net.kovidgoyal.kitty'".to_string())
+        );
     }
 
     #[test]
