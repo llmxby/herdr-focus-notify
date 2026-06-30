@@ -74,7 +74,7 @@ fn run() -> Result<(), String> {
     }
 
     let herdr_bin = resolve_herdr_bin();
-    let notifier_bin = resolve_notifier_bin();
+    let notifier_bin = resolve_notifier_bin()?;
 
     let notification = if env::args().any(|arg| arg == "--test") {
         test_notification(&herdr_bin)
@@ -113,11 +113,22 @@ fn resolve_herdr_bin() -> String {
         .unwrap_or_else(|| "herdr".to_string())
 }
 
-fn resolve_notifier_bin() -> String {
-    config_var("HERDR_FOCUS_NOTIFY_NOTIFIER")
-        .or_else(|| find_executable("alerter", alerter_candidate_paths()))
+fn resolve_notifier_bin() -> Result<String, String> {
+    if let Some(configured) = config_var("HERDR_FOCUS_NOTIFY_NOTIFIER") {
+        if is_executable_file(Path::new(&configured)) || executable_in_path(&configured).is_some() {
+            return Ok(configured);
+        }
+
+        return Err(format!(
+            "configured notifier is not executable: {configured}; install alerter with `brew install vjeantet/tap/alerter` or set HERDR_FOCUS_NOTIFY_NOTIFIER"
+        ));
+    }
+
+    find_executable("alerter", alerter_candidate_paths())
         .or_else(|| find_executable("terminal-notifier", terminal_notifier_candidate_paths()))
-        .unwrap_or_else(|| "alerter".to_string())
+        .ok_or_else(|| {
+            "no clickable notifier backend found; install alerter with `brew install vjeantet/tap/alerter` or set HERDR_FOCUS_NOTIFY_NOTIFIER".to_string()
+        })
 }
 
 fn notifier_kind(notifier_bin: &str) -> &'static str {
@@ -216,14 +227,20 @@ fn pane_is_focused(pane_id: &str, herdr_bin: &str) -> bool {
 }
 
 fn should_skip_notification(pane_id: &str, herdr_bin: &str) -> bool {
-    if !pane_is_focused(pane_id, herdr_bin) {
-        return false;
-    }
+    should_skip_from_focus_and_bundles(
+        pane_is_focused(pane_id, herdr_bin),
+        herdr_bundle_id(),
+        frontmost_bundle_id(),
+    )
+}
 
-    match (herdr_bundle_id(), frontmost_bundle_id()) {
-        (Some(herdr), Some(frontmost)) => herdr == frontmost,
-        _ => true,
-    }
+fn should_skip_from_focus_and_bundles(
+    pane_is_focused: bool,
+    herdr_bundle_id: Option<String>,
+    frontmost_bundle_id: Option<String>,
+) -> bool {
+    pane_is_focused
+        && matches!((herdr_bundle_id, frontmost_bundle_id), (Some(herdr), Some(frontmost)) if herdr == frontmost)
 }
 
 fn herdr_bundle_id() -> Option<String> {
@@ -523,8 +540,13 @@ fn write_focus_script(
 
     let mut hasher = DefaultHasher::new();
     notification.pane_id.hash(&mut hasher);
+    notification.status.hash(&mut hasher);
+    notification.title.hash(&mut hasher);
+    notification.body.hash(&mut hasher);
+    notification.group.hash(&mut hasher);
     herdr_bin.hash(&mut hasher);
     notifier_bin.hash(&mut hasher);
+    alerter_timeout_secs().hash(&mut hasher);
     activate_app().hash(&mut hasher);
     is_debug_enabled().hash(&mut hasher);
 
@@ -887,6 +909,35 @@ mod tests {
             focused_pane_id_from_agent_list_json(json).unwrap(),
             Some("w1:p2".to_string())
         );
+    }
+
+    #[test]
+    fn skips_only_when_same_pane_and_frontmost_app_are_confirmed() {
+        assert!(should_skip_from_focus_and_bundles(
+            true,
+            Some("com.example.Herdr".to_string()),
+            Some("com.example.Herdr".to_string())
+        ));
+        assert!(!should_skip_from_focus_and_bundles(
+            true,
+            Some("com.example.Herdr".to_string()),
+            Some("com.apple.Terminal".to_string())
+        ));
+        assert!(!should_skip_from_focus_and_bundles(
+            true,
+            None,
+            Some("com.example.Herdr".to_string())
+        ));
+        assert!(!should_skip_from_focus_and_bundles(
+            true,
+            Some("com.example.Herdr".to_string()),
+            None
+        ));
+        assert!(!should_skip_from_focus_and_bundles(
+            false,
+            Some("com.example.Herdr".to_string()),
+            Some("com.example.Herdr".to_string())
+        ));
     }
 
     #[test]
