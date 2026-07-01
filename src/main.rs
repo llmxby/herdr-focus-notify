@@ -18,21 +18,11 @@ struct PluginEvent {
 #[derive(Debug, Deserialize)]
 struct EventData {
     pane_id: Option<String>,
-    workspace_id: Option<String>,
-    workspace: Option<String>,
-    tab: Option<String>,
     agent_status: Option<String>,
     agent: Option<String>,
     display_agent: Option<String>,
     title: Option<String>,
     custom_status: Option<String>,
-    state_labels: Option<StateLabels>,
-}
-
-#[derive(Debug, Deserialize)]
-struct StateLabels {
-    error: Option<String>,
-    task: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -120,27 +110,13 @@ fn resolve_notifier_bin() -> Result<String, String> {
         }
 
         return Err(format!(
-            "configured notifier is not executable: {configured}; install alerter with `brew install vjeantet/tap/alerter` or set HERDR_FOCUS_NOTIFY_NOTIFIER"
+            "configured notifier is not executable: {configured}; install alerter with `brew install vjeantet/tap/alerter`"
         ));
     }
 
-    find_executable("alerter", alerter_candidate_paths())
-        .or_else(|| find_executable("terminal-notifier", terminal_notifier_candidate_paths()))
-        .ok_or_else(|| {
-            "no clickable notifier backend found; install alerter with `brew install vjeantet/tap/alerter` or set HERDR_FOCUS_NOTIFY_NOTIFIER".to_string()
-        })
-}
-
-fn notifier_kind(notifier_bin: &str) -> &'static str {
-    let stem = Path::new(notifier_bin)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("");
-    if stem == "alerter" {
-        "alerter"
-    } else {
-        "terminal-notifier"
-    }
+    find_executable("alerter", alerter_candidate_paths()).ok_or_else(|| {
+        "no alerter notifier found; install alerter with `brew install vjeantet/tap/alerter` or set HERDR_FOCUS_NOTIFY_NOTIFIER".to_string()
+    })
 }
 
 fn alerter_candidate_paths() -> Vec<PathBuf> {
@@ -162,13 +138,6 @@ fn herdr_candidate_paths() -> Vec<PathBuf> {
     paths.push(PathBuf::from("/opt/homebrew/bin/herdr"));
     paths.push(PathBuf::from("/usr/local/bin/herdr"));
     paths
-}
-
-fn terminal_notifier_candidate_paths() -> Vec<PathBuf> {
-    vec![
-        PathBuf::from("/opt/homebrew/bin/terminal-notifier"),
-        PathBuf::from("/usr/local/bin/terminal-notifier"),
-    ]
 }
 
 fn find_executable(name: &str, candidate_paths: Vec<PathBuf>) -> Option<String> {
@@ -352,10 +321,15 @@ fn notification_from_event_json(json: &str) -> Result<Option<FocusNotification>,
         .unwrap_or("Agent")
         .to_string();
 
-    let title = match status.as_str() {
+    let base_title = match status.as_str() {
         "blocked" => format!("{agent} needs attention"),
         "done" => format!("{agent} finished"),
         _ => unreachable!("status already filtered"),
+    };
+    let title = if let Some(custom_status) = first_non_empty([data.custom_status.as_deref()]) {
+        format!("{base_title}: {custom_status}")
+    } else {
+        base_title
     };
 
     let body = notification_body(&data);
@@ -371,44 +345,9 @@ fn notification_from_event_json(json: &str) -> Result<Option<FocusNotification>,
 }
 
 fn notification_body(data: &EventData) -> String {
-    let mut lines = Vec::new();
-
-    if let Some(text) = first_non_empty([
-        data.custom_status.as_deref(),
-        data.state_labels
-            .as_ref()
-            .and_then(|labels| labels.error.as_deref()),
-        data.state_labels
-            .as_ref()
-            .and_then(|labels| labels.task.as_deref()),
-        data.title.as_deref(),
-    ]) {
-        lines.push(truncate(text, 220));
-    }
-
-    let workspace = first_non_empty([data.workspace.as_deref(), data.workspace_id.as_deref()]);
-    let tab = data.tab.as_deref().filter(|value| !value.trim().is_empty());
-
-    if workspace.is_some() || tab.is_some() {
-        let mut location = String::from("Location:");
-        if let Some(workspace) = workspace {
-            location.push(' ');
-            location.push_str(workspace);
-            if tab.is_some() {
-                location.push_str(" / ");
-            }
-        }
-        if let Some(tab) = tab {
-            location.push_str(tab);
-        }
-        lines.push(location);
-    }
-
-    if lines.is_empty() {
-        "Click to focus this Herdr agent pane.".to_string()
-    } else {
-        lines.join("\n")
-    }
+    first_non_empty([data.title.as_deref()])
+        .map(|text| truncate(text, 220))
+        .unwrap_or_else(|| "Click to focus this Herdr agent pane.".to_string())
 }
 
 fn first_non_empty<const N: usize>(values: [Option<&str>; N]) -> Option<&str> {
@@ -571,22 +510,14 @@ fn focus_script_content(
     notifier_bin: &str,
     debug_log_path: Option<&Path>,
 ) -> String {
-    match notifier_kind(notifier_bin) {
-        "alerter" => alerter_focus_script(
-            notification,
-            herdr_bin,
-            notifier_bin,
-            alerter_timeout_secs(),
-            activation_command().as_deref(),
-            debug_log_path,
-        ),
-        _ => terminal_notifier_focus_script(
-            &notification.pane_id,
-            herdr_bin,
-            activation_command().as_deref(),
-            debug_log_path,
-        ),
-    }
+    alerter_focus_script(
+        notification,
+        herdr_bin,
+        notifier_bin,
+        alerter_timeout_secs(),
+        activation_command().as_deref(),
+        debug_log_path,
+    )
 }
 
 fn alerter_focus_script(
@@ -682,47 +613,6 @@ fn activation_command_from(app: String) -> String {
     }
 }
 
-fn terminal_notifier_focus_script(
-    pane_id: &str,
-    herdr_bin: &str,
-    activate_command: Option<&str>,
-    debug_log_path: Option<&Path>,
-) -> String {
-    let mut script = String::from("#!/bin/sh\n");
-
-    if let Some(debug_log_path) = debug_log_path {
-        let message = format!("focus notification clicked: pane_id={pane_id}");
-        script.push_str(&format!(
-            "printf '%s %s\\n' \"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\" {} >> {} 2>&1\n",
-            shell_quote(&message),
-            shell_quote(debug_log_path.to_string_lossy().as_ref())
-        ));
-        let log_q = shell_quote(debug_log_path.to_string_lossy().as_ref());
-        script.push_str(&activation_script(activate_command, Some(log_q.as_str())));
-        script.push_str(&format!(
-            "{} agent focus {} >> {} 2>&1\n",
-            shell_quote(herdr_bin),
-            shell_quote(pane_id),
-            shell_quote(debug_log_path.to_string_lossy().as_ref())
-        ));
-        script.push_str("status=$?\n");
-        script.push_str(&format!(
-            "printf '%s focus command exited with %s\\n' \"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\" \"$status\" >> {} 2>&1\n",
-            shell_quote(debug_log_path.to_string_lossy().as_ref())
-        ));
-        script.push_str("exit \"$status\"\n");
-        return script;
-    }
-
-    script.push_str(&activation_script(activate_command, None));
-    script.push_str(&format!(
-        "exec {} agent focus {}\n",
-        shell_quote(herdr_bin),
-        shell_quote(pane_id)
-    ));
-    script
-}
-
 #[cfg(unix)]
 fn make_executable(path: &Path) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -738,14 +628,11 @@ fn make_executable(_path: &Path) -> io::Result<()> {
 }
 
 fn send_notification(
-    notification: &FocusNotification,
+    _notification: &FocusNotification,
     script_path: &Path,
-    notifier_bin: &str,
+    _notifier_bin: &str,
 ) -> io::Result<()> {
-    match notifier_kind(notifier_bin) {
-        "alerter" => spawn_detached_script(script_path),
-        _ => send_via_terminal_notifier(notification, script_path, notifier_bin),
-    }
+    spawn_detached_script(script_path)
 }
 
 fn spawn_detached_script(script_path: &Path) -> io::Result<()> {
@@ -763,37 +650,6 @@ fn spawn_detached_script(script_path: &Path) -> io::Result<()> {
         .stderr(Stdio::null())
         .spawn()
         .map(|_| ())
-}
-
-fn send_via_terminal_notifier(
-    notification: &FocusNotification,
-    script_path: &Path,
-    notifier_bin: &str,
-) -> io::Result<()> {
-    let script_path_string = script_path.to_string_lossy();
-    let execute = format!("sh {}", shell_quote(script_path_string.as_ref()));
-
-    let result = Command::new(notifier_bin)
-        .arg("-title")
-        .arg(&notification.title)
-        .arg("-message")
-        .arg(&notification.body)
-        .arg("-group")
-        .arg(&notification.group)
-        .arg("-execute")
-        .arg(execute)
-        .status();
-
-    match result {
-        Ok(status) if status.success() => Ok(()),
-        Ok(status) => Err(io::Error::other(format!(
-            "terminal-notifier exited with {status}"
-        ))),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Err(io::Error::other(
-            "no clickable notifier backend found; for reliable click-to-focus install alerter: brew install vjeantet/tap/alerter",
-        )),
-        Err(err) => Err(err),
-    }
 }
 
 fn sanitize_group_id(value: &str) -> String {
@@ -836,6 +692,7 @@ mod tests {
                 "agent_status": "blocked",
                 "agent": "codex",
                 "display_agent": "Codex",
+                "title": "Implement plugin",
                 "custom_status": "Needs an answer"
             }
         }"#;
@@ -844,9 +701,8 @@ mod tests {
 
         assert_eq!(notification.pane_id, "w1:p3");
         assert_eq!(notification.status, "blocked");
-        assert_eq!(notification.title, "Codex needs attention");
-        assert!(notification.body.contains("Needs an answer"));
-        assert!(notification.body.contains("Location: herdr"));
+        assert_eq!(notification.title, "Codex needs attention: Needs an answer");
+        assert_eq!(notification.body, "Implement plugin");
         assert_eq!(notification.group, "herdr-w1-p3");
     }
 
@@ -957,14 +813,14 @@ mod tests {
         let script = focus_script_content(
             &notification,
             "/tmp/herdr bin",
-            "/usr/local/bin/terminal-notifier",
+            "/opt/homebrew/bin/alerter",
             Some(Path::new("/tmp/focus clicks.log")),
         );
 
-        assert!(script.contains("focus notification clicked: pane_id=pane '\\'' one"));
+        assert!(script.contains("alerter result="));
         assert!(script.contains(">> '/tmp/focus clicks.log' 2>&1"));
         assert!(script.contains("'/tmp/herdr bin' agent focus 'pane '\\'' one'"));
-        assert!(script.contains("focus command exited with %s"));
+        assert!(script.contains("focus exited %s"));
         assert!(script.contains("exit \"$status\""));
     }
 
@@ -1060,33 +916,6 @@ mod tests {
     }
 
     #[test]
-    fn terminal_notifier_script_includes_activation_when_configured() {
-        let script = terminal_notifier_focus_script(
-            "w1:p3",
-            "/usr/local/bin/herdr",
-            Some("open -a 'kitty'"),
-            None,
-        );
-
-        assert!(script.contains("open -a 'kitty' >/dev/null 2>&1"));
-        assert!(script.contains("exec '/usr/local/bin/herdr' agent focus 'w1:p3'"));
-    }
-
-    #[test]
-    fn terminal_notifier_debug_script_includes_activation_when_configured() {
-        let script = terminal_notifier_focus_script(
-            "w1:p3",
-            "/usr/local/bin/herdr",
-            Some("open -a 'kitty'"),
-            Some(Path::new("/tmp/click.log")),
-        );
-
-        assert!(script.contains("open -a 'kitty' >> '/tmp/click.log' 2>&1"));
-        assert!(script.contains("activate exited %s"));
-        assert!(script.contains("'/usr/local/bin/herdr' agent focus 'w1:p3'"));
-    }
-
-    #[test]
     fn activation_command_opens_app_names_and_paths() {
         assert_eq!(
             activation_command_from("kitty".to_string()),
@@ -1096,17 +925,6 @@ mod tests {
             activation_command_from("/Applications/kitty.app".to_string()),
             "open '/Applications/kitty.app'".to_string()
         );
-    }
-
-    #[test]
-    fn notifier_kind_detects_alerter() {
-        assert_eq!(notifier_kind("/opt/homebrew/bin/alerter"), "alerter");
-        assert_eq!(notifier_kind("alerter"), "alerter");
-        assert_eq!(
-            notifier_kind("/opt/homebrew/bin/terminal-notifier"),
-            "terminal-notifier"
-        );
-        assert_eq!(notifier_kind("terminal-notifier"), "terminal-notifier");
     }
 
     #[test]
@@ -1123,14 +941,14 @@ mod tests {
             r#"
             # comment
             HERDR_FOCUS_NOTIFY_ENABLED=1
-            HERDR_FOCUS_NOTIFY_NOTIFIER="/opt/homebrew/bin/terminal-notifier"
+            HERDR_FOCUS_NOTIFY_NOTIFIER="/opt/homebrew/bin/alerter"
             HERDR_FOCUS_NOTIFY_STATUSES='blocked,done'
             "#,
         );
 
         assert_eq!(
             values.get("HERDR_FOCUS_NOTIFY_NOTIFIER").unwrap(),
-            "/opt/homebrew/bin/terminal-notifier"
+            "/opt/homebrew/bin/alerter"
         );
         assert_eq!(
             values.get("HERDR_FOCUS_NOTIFY_STATUSES").unwrap(),
