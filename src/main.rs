@@ -3,6 +3,7 @@ mod config;
 mod event;
 mod executable;
 mod focus;
+mod icons;
 mod notification;
 mod notifier;
 mod script;

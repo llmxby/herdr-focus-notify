@@ -29,6 +29,7 @@ pub(crate) fn test_notification(herdr_bin: &str) -> FocusNotification {
         title: "Herdr Focus Notify test".to_string(),
         body: format!("Click to run: {herdr_bin} agent focus {pane_id}"),
         group: format!("herdr-{}", sanitize_group_id(&pane_id)),
+        app_icon: None,
     }
 }
 

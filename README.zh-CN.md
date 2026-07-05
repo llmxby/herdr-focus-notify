@@ -4,6 +4,8 @@
 
 当 Herdr agent 需要关注（`blocked`）或完成（`done`）时，发送可点击的 macOS 通知。点击通知会聚焦到对应的 Herdr pane。
 
+常见 agent 会自动使用插件内置的本地图标，包括 Codex、Claude Code、Claude、Cursor、Gemini CLI、Gemini、GitHub Copilot、DeepSeek、Grok、Qwen、OpenCode、OpenHands、Roo Code、Cline、Windsurf、Devin、Manus、Kiro、Trae、Zencoder、Lovable、v0。
+
 通知只会在你**没有在看这个 pane** 时发送：
 
 - 你当前在其它 App（Herdr 不在前台）
@@ -80,3 +82,5 @@ HERDR_FOCUS_NOTIFY_ACTIVATE_APP=kitty
 如果没有配置 `ACTIVATE_APP`，通知点击后仍会执行 `herdr agent focus <pane>`，但插件无法可靠判断前台 App 是否就是 Herdr 所在终端，因此可能会多发通知。
 
 排障时可以临时配置 `HERDR_FOCUS_NOTIFY_DEBUG=1`；需要暂停插件时可以配置 `HERDR_FOCUS_NOTIFY_ENABLED=0`。
+
+内置 agent 图标来自 `@lobehub/icons-static-png`，许可证为 MIT。见 `assets/icons/NOTICE.md`。

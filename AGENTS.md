@@ -27,6 +27,7 @@ CI runs on `macos-latest` and executes all of the above in order (see [`.github/
 ├── herdr-plugin.toml   # Herdr plugin manifest: build command, actions, event subscriptions
 ├── src/main.rs         # Thin CLI/plugin entry point
 ├── src/*.rs            # Focused modules for CLI, config, event parsing, focus checks, scripts, and notifier delivery
+├── assets/icons        # Bundled local agent icons used by alerter --app-icon
 ├── tests/cli_test.rs   # Process-level CLI contract tests
 ├── .env.example        # Documented configuration template for plugin users
 ├── README.md           # English documentation
@@ -45,6 +46,7 @@ There are no submodules, no external crates beyond serde/serde_json, and no buil
 3. **Notification decision**:
    - Only `blocked` and `done` statuses produce notifications unless overridden by `HERDR_FOCUS_NOTIFY_STATUSES`.
    - The notification is skipped if the target pane is already focused **and** the frontmost macOS application belongs to the same bundle ID as the configured `ACTIVATE_APP` (see `should_skip_from_focus_and_bundles`). If either check fails, the plugin sends the notification to avoid missing a state change.
+   - Recognized agent names are matched to bundled local PNG icons and passed to `alerter` with `--app-icon`.
 4. **Binary resolution**:
    - `herdr` is resolved from `HERDR_BIN_PATH`, then `PATH`, then hard-coded candidates (`~/.local/bin/herdr`, `/opt/homebrew/bin/herdr`, `/usr/local/bin/herdr`), defaulting to `"herdr"`.
    - The notifier backend is resolved from `HERDR_FOCUS_NOTIFY_NOTIFIER`, then `PATH`, then hard-coded candidates for `alerter`.
@@ -72,6 +74,8 @@ Key variables observed in code:
 | `HERDR_FOCUS_NOTIFY_DEBUG` | `1`/`true`/`yes`/`on` enables stderr diagnostics and a `focus-click.log` in the state directory. |
 
 Important: `HERDR_FOCUS_NOTIFY_ACTIVATE_APP` values containing `/` are passed to `open` directly; values without `/` are passed to `open -a`. Paths are **not shell-expanded**, so `~` is treated literally.
+
+Bundled agent icons are extracted from `@lobehub/icons-static-png` and attributed in `assets/icons/NOTICE.md`.
 
 ## Code Patterns and Conventions
 

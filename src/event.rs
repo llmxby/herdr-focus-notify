@@ -1,5 +1,6 @@
 use serde::Deserialize;
 
+use crate::icons::agent_icon_path;
 use crate::notification::FocusNotification;
 use crate::util::sanitize_group_id;
 
@@ -51,6 +52,7 @@ pub(crate) fn notification_from_event_json(
     let agent = first_non_empty([data.display_agent.as_deref(), data.agent.as_deref()])
         .unwrap_or("Agent")
         .to_string();
+    let app_icon = agent_icon_path(&[data.display_agent.as_deref(), data.agent.as_deref()]);
 
     let base_title = match status.as_str() {
         "blocked" => format!("{agent} needs attention"),
@@ -72,6 +74,7 @@ pub(crate) fn notification_from_event_json(
         title,
         body,
         group,
+        app_icon,
     }))
 }
 
@@ -126,6 +129,11 @@ mod tests {
         assert_eq!(notification.title, "Codex needs attention: Needs an answer");
         assert_eq!(notification.body, "Implement plugin");
         assert_eq!(notification.group, "herdr-w1-p3");
+        assert!(notification
+            .app_icon
+            .as_deref()
+            .unwrap()
+            .ends_with("/icons/codex-color.png"));
     }
 
     #[test]
@@ -144,6 +152,7 @@ mod tests {
         assert_eq!(notification.status, "done");
         assert_eq!(notification.title, "Codex finished");
         assert_eq!(notification.body, "Implement plugin");
+        assert!(notification.app_icon.is_some());
     }
 
     #[test]

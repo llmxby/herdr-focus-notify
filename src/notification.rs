@@ -5,4 +5,5 @@ pub(crate) struct FocusNotification {
     pub(crate) title: String,
     pub(crate) body: String,
     pub(crate) group: String,
+    pub(crate) app_icon: Option<String>,
 }

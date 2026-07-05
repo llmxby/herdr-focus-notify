@@ -4,6 +4,8 @@ English | [简体中文](README.zh-CN.md)
 
 Send clickable macOS notifications when a Herdr agent needs attention (`blocked`) or finishes (`done`). Clicking a notification focuses the matching Herdr pane.
 
+Common agent notifications use bundled local icons, including Codex, Claude Code, Claude, Cursor, Gemini CLI, Gemini, GitHub Copilot, DeepSeek, Grok, Qwen, OpenCode, OpenHands, Roo Code, Cline, Windsurf, Devin, Manus, Kiro, Trae, Zencoder, Lovable, and v0.
+
 Notifications are sent only when you are **not already looking at that pane**:
 
 - Herdr is not the frontmost app.
@@ -80,3 +82,5 @@ Configuring `ACTIVATE_APP` is recommended. It is used to bring your terminal app
 If `ACTIVATE_APP` is not configured, clicking a notification still runs `herdr agent focus <pane>`, but the plugin cannot reliably tell whether the frontmost app is the terminal that hosts Herdr, so it may send extra notifications.
 
 For troubleshooting, temporarily set `HERDR_FOCUS_NOTIFY_DEBUG=1`. To pause the plugin without unlinking it, set `HERDR_FOCUS_NOTIFY_ENABLED=0`.
+
+Bundled agent icons are vendored from `@lobehub/icons-static-png` under the MIT license. See `assets/icons/NOTICE.md`.

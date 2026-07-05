@@ -25,6 +25,7 @@ pub(crate) fn write_focus_script(
     notification.title.hash(&mut hasher);
     notification.body.hash(&mut hasher);
     notification.group.hash(&mut hasher);
+    notification.app_icon.hash(&mut hasher);
     herdr_bin.hash(&mut hasher);
     notifier_bin.hash(&mut hasher);
     alerter_timeout_secs().hash(&mut hasher);
@@ -76,6 +77,11 @@ fn alerter_focus_script(
     let pane_q = shell_quote(&notification.pane_id);
     let herdr_q = shell_quote(herdr_bin);
     let notifier_q = shell_quote(notifier_bin);
+    let app_icon_args = notification
+        .app_icon
+        .as_ref()
+        .map(|path| format!(" --app-icon {}", shell_quote(path)))
+        .unwrap_or_default();
     let timeout_args = if timeout_secs > 0 {
         format!(" --timeout {}", timeout_secs)
     } else {
@@ -84,11 +90,12 @@ fn alerter_focus_script(
 
     let mut script = String::from("#!/bin/sh\n");
     script.push_str(&format!(
-        "result=$({notifier} --title {title} --message {body} --group {group} --actions {action} --close-label {close_label}{timeout_args} 2>/dev/null)\n",
+        "result=$({notifier} --title {title} --message {body} --group {group}{app_icon_args} --actions {action} --close-label {close_label}{timeout_args} 2>/dev/null)\n",
         notifier = notifier_q,
         title = title_q,
         body = body_q,
         group = group_q,
+        app_icon_args = app_icon_args,
         action = shell_quote("Focus"),
         close_label = shell_quote("Dismiss"),
         timeout_args = timeout_args,
@@ -187,6 +194,7 @@ mod tests {
             title: "Codex needs attention".to_string(),
             body: "Needs an answer".to_string(),
             group: "herdr-w1-p3".to_string(),
+            app_icon: Some("/tmp/codex icon.png".to_string()),
         }
     }
 
@@ -198,6 +206,7 @@ mod tests {
             title: "x".to_string(),
             body: "y".to_string(),
             group: "g".to_string(),
+            app_icon: None,
         };
         let script = focus_script_content(
             &notification,
@@ -226,6 +235,7 @@ mod tests {
         assert!(script.contains("'/opt/homebrew/bin/alerter' --title 'Codex needs attention'"));
         assert!(script.contains("--message 'Needs an answer'"));
         assert!(script.contains("--group 'herdr-w1-p3'"));
+        assert!(script.contains("--app-icon '/tmp/codex icon.png'"));
         assert!(script.contains("--actions 'Focus'"));
         assert!(script.contains("--close-label 'Dismiss'"));
         assert!(script.contains("notifier_status=$?"));
