@@ -7,6 +7,7 @@ mod icons;
 mod notification;
 mod notifier;
 mod script;
+mod state;
 mod util;
 
 use std::env;
@@ -62,11 +63,12 @@ fn run() -> Result<(), String> {
 
             match event_action_from_event_json(&event_json)? {
                 Some(PluginEventAction::Notify(notification)) => notification,
-                Some(PluginEventAction::DismissPane { pane_id }) => {
+                Some(PluginEventAction::DismissPane {
+                    pane_id,
+                    replay_remaining,
+                }) => {
                     let notifier_bin = resolve_notifier_bin()?;
-                    let group = notification_group_for_pane(&pane_id);
-                    notifier::remove_notification(&notifier_bin, &group)
-                        .map_err(|err| format!("failed to remove notification: {err}"))?;
+                    dismiss_notification(&pane_id, replay_remaining, &herdr_bin, &notifier_bin)?;
                     return Ok(());
                 }
                 None => return Ok(()),
@@ -84,11 +86,53 @@ fn run() -> Result<(), String> {
     }
 
     let notifier_bin = resolve_notifier_bin()?;
-    let script_path = write_focus_script(&notification, &herdr_bin, &notifier_bin)
-        .map_err(|err| format!("failed to write focus script: {err}"))?;
-
-    send_notification(&script_path, action == CliAction::Test)
-        .map_err(|err| format!("failed to send notification: {err}"))?;
+    deliver_notification(
+        &notification,
+        &herdr_bin,
+        &notifier_bin,
+        action == CliAction::Test,
+    )?;
+    if action == CliAction::Event {
+        state::save_active_notification(&notification)
+            .map_err(|err| format!("failed to save active notification: {err}"))?;
+    }
 
     Ok(())
+}
+
+fn dismiss_notification(
+    pane_id: &str,
+    replay_remaining: bool,
+    herdr_bin: &str,
+    notifier_bin: &str,
+) -> Result<(), String> {
+    let remaining = state::dismiss_active_notification(pane_id)
+        .map_err(|err| format!("failed to update active notifications: {err}"))?;
+    let group = notification_group_for_pane(pane_id);
+    notifier::remove_notification(notifier_bin, &group)
+        .map_err(|err| format!("failed to remove notification: {err}"))?;
+
+    if replay_remaining {
+        for notification in remaining {
+            if !status_is_enabled(&notification.status) {
+                continue;
+            }
+            deliver_notification(&notification, herdr_bin, notifier_bin, false)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn deliver_notification(
+    notification: &notification::FocusNotification,
+    herdr_bin: &str,
+    notifier_bin: &str,
+    foreground: bool,
+) -> Result<(), String> {
+    let script_path = write_focus_script(notification, herdr_bin, notifier_bin)
+        .map_err(|err| format!("failed to write focus script: {err}"))?;
+
+    send_notification(&script_path, foreground)
+        .map_err(|err| format!("failed to send notification: {err}"))
 }

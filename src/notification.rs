@@ -1,6 +1,8 @@
+use serde::{Deserialize, Serialize};
+
 use crate::util::sanitize_group_id;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct FocusNotification {
     pub(crate) pane_id: String,
     pub(crate) status: String,

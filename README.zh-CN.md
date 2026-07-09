@@ -13,6 +13,8 @@
 
 如果之后你手动切到对应 pane，插件会监听 Herdr 的 `pane.focused` 事件，自动关闭这个 pane 还停留着的通知。
 
+多个 pane 同时有通知时，插件会在 Herdr 插件 state 目录里记录一份轻量状态。如果 macOS 在你点击其中一个通知后把整组通知都清掉，插件会把其它仍然活跃的 pane 通知补回来。通知正文也会带上 pane id、可用时的 workspace id，以及状态信息，方便区分多个 Claude/Codex pane。
+
 ## 前提条件
 
 - macOS

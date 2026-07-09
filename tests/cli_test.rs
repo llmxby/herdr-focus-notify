@@ -1,5 +1,5 @@
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 fn binary() -> Command {
     Command::new(env!("CARGO_BIN_EXE_herdr-focus-notify"))
@@ -44,14 +44,7 @@ fn test_mode_reports_bad_notifier() {
 
 #[test]
 fn pane_focused_event_removes_matching_notification_group() {
-    let dir = std::env::temp_dir().join(format!(
-        "herdr-focus-notify-test-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let dir = temp_test_dir();
     std::fs::create_dir_all(&dir).unwrap();
     let fake_notifier = dir.join("alerter");
     let log = dir.join("args.log");
@@ -75,6 +68,7 @@ fn pane_focused_event_removes_matching_notification_group() {
 
     let output = binary()
         .env("HERDR_FOCUS_NOTIFY_NOTIFIER", &fake_notifier)
+        .env("HERDR_PLUGIN_STATE_DIR", &dir)
         .env(
             "HERDR_PLUGIN_EVENT_JSON",
             r#"{"event":"pane_focused","data":{"type":"pane_focused","pane_id":"w1:p3"}}"#,
@@ -90,6 +84,89 @@ fn pane_focused_event_removes_matching_notification_group() {
     );
 
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn pane_focused_event_replays_other_active_notifications() {
+    let dir = temp_test_dir();
+    std::fs::create_dir_all(&dir).unwrap();
+    let fake_notifier = dir.join("alerter");
+    let log = dir.join("args.log");
+    std::fs::write(
+        &fake_notifier,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" >> {}\n",
+            shell_quote(log.to_string_lossy().as_ref())
+        ),
+    )
+    .unwrap();
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut permissions = std::fs::metadata(&fake_notifier).unwrap().permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&fake_notifier, permissions).unwrap();
+    }
+
+    for pane_id in ["p1", "p2"] {
+        let event_json = format!(
+            r#"{{"event":"pane_agent_status_changed","data":{{"type":"pane_agent_status_changed","pane_id":"{pane_id}","workspace_id":"work","agent_status":"blocked","agent":"Codex","title":"Task {pane_id}"}}}}"#
+        );
+        let output = binary()
+            .env("HERDR_FOCUS_NOTIFY_NOTIFIER", &fake_notifier)
+            .env("HERDR_PLUGIN_STATE_DIR", &dir)
+            .env("HERDR_PLUGIN_EVENT_JSON", event_json)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+    }
+    wait_for_log_contains(&log, "herdr-p2");
+    std::fs::write(&log, "").unwrap();
+
+    let output = binary()
+        .env("HERDR_FOCUS_NOTIFY_NOTIFIER", &fake_notifier)
+        .env("HERDR_PLUGIN_STATE_DIR", &dir)
+        .env(
+            "HERDR_PLUGIN_EVENT_JSON",
+            r#"{"event":"pane_focused","data":{"type":"pane_focused","pane_id":"p1"}}"#,
+        )
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let content = wait_for_log_contains(&log, "herdr-p2");
+    assert!(content.contains("--remove\nherdr-p1"));
+    assert!(content.contains("--group\nherdr-p2"));
+    let active = std::fs::read_to_string(dir.join("active-notifications.json")).unwrap();
+    assert!(!active.contains("\"pane_id\": \"p1\""));
+    assert!(active.contains("\"pane_id\": \"p2\""));
+
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+fn temp_test_dir() -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "herdr-focus-notify-test-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ))
+}
+
+fn wait_for_log_contains(path: &std::path::Path, needle: &str) -> String {
+    for _ in 0..100 {
+        if let Ok(content) = std::fs::read_to_string(path) {
+            if content.contains(needle) {
+                return content;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    panic!("timed out waiting for {needle} in {}", path.display());
 }
 
 fn shell_quote(value: &str) -> String {

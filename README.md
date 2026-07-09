@@ -14,6 +14,12 @@ Notifications are sent only when you are **not already looking at that pane**:
 If you manually focus the pane later, Herdr's `pane.focused` event removes any
 still-visible notification for that pane.
 
+When several panes notify at once, the plugin keeps a small state file under the
+Herdr plugin state directory. If macOS clears the whole notification stack after
+you click one alert, the plugin replays the other still-active pane notifications.
+Notification bodies include the pane id, workspace id when available, and status
+details so similarly named agents are easier to tell apart.
+
 ## Requirements
 
 - macOS
