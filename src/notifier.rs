@@ -29,6 +29,20 @@ pub(crate) fn send_notification(script_path: &Path, foreground: bool) -> io::Res
     }
 }
 
+pub(crate) fn remove_notification(notifier_bin: &str, group: &str) -> io::Result<()> {
+    let status = Command::new(notifier_bin)
+        .arg("--remove")
+        .arg(group)
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "notifier remove exited with {status}"
+        )))
+    }
+}
+
 fn alerter_candidate_paths() -> Vec<PathBuf> {
     let mut paths = vec![
         PathBuf::from("/opt/homebrew/bin/alerter"),

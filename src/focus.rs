@@ -2,8 +2,7 @@ use serde::Deserialize;
 use std::process::Command;
 
 use crate::config::activate_app;
-use crate::notification::FocusNotification;
-use crate::util::sanitize_group_id;
+use crate::notification::{notification_group_for_pane, FocusNotification};
 
 #[derive(Debug, Deserialize)]
 struct AgentListEnvelope {
@@ -28,7 +27,7 @@ pub(crate) fn test_notification(herdr_bin: &str) -> FocusNotification {
         status: "blocked".to_string(),
         title: "Herdr Focus Notify test".to_string(),
         body: format!("Click to run: {herdr_bin} agent focus {pane_id}"),
-        group: format!("herdr-{}", sanitize_group_id(&pane_id)),
+        group: notification_group_for_pane(&pane_id),
         app_icon: None,
     }
 }

@@ -1,16 +1,24 @@
 use serde::Deserialize;
 
 use crate::icons::agent_icon_path;
-use crate::notification::FocusNotification;
-use crate::util::sanitize_group_id;
+use crate::notification::{notification_group_for_pane, FocusNotification};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PluginEventAction {
+    Notify(FocusNotification),
+    DismissPane { pane_id: String },
+}
 
 #[derive(Debug, Deserialize)]
 struct PluginEvent {
+    event: Option<String>,
     data: Option<EventData>,
 }
 
 #[derive(Debug, Deserialize)]
 struct EventData {
+    #[serde(rename = "type")]
+    event_type: Option<String>,
     pane_id: Option<String>,
     agent_status: Option<String>,
     agent: Option<String>,
@@ -19,15 +27,48 @@ struct EventData {
     custom_status: Option<String>,
 }
 
-pub(crate) fn notification_from_event_json(
+pub(crate) fn event_action_from_event_json(
     json: &str,
-) -> Result<Option<FocusNotification>, String> {
+) -> Result<Option<PluginEventAction>, String> {
     let event: PluginEvent =
         serde_json::from_str(json).map_err(|err| format!("invalid event json: {err}"))?;
     let Some(data) = event.data else {
         return Ok(None);
     };
 
+    let event_name = event_name(event.event.as_deref(), data.event_type.as_deref());
+    if event_matches(event_name, "pane.focused", "pane_focused") {
+        return Ok(
+            pane_id_from_data(&data).map(|pane_id| PluginEventAction::DismissPane { pane_id })
+        );
+    }
+
+    if !event_name
+        .map(|name| {
+            event_matches(
+                Some(name),
+                "pane.agent_status_changed",
+                "pane_agent_status_changed",
+            )
+        })
+        .unwrap_or(true)
+    {
+        return Ok(None);
+    }
+
+    notification_from_event_data(data)
+        .map(|notification| notification.map(PluginEventAction::Notify))
+}
+
+#[cfg(test)]
+fn notification_from_event_json(json: &str) -> Result<Option<FocusNotification>, String> {
+    match event_action_from_event_json(json)? {
+        Some(PluginEventAction::Notify(notification)) => Ok(Some(notification)),
+        Some(PluginEventAction::DismissPane { .. }) | None => Ok(None),
+    }
+}
+
+fn notification_from_event_data(data: EventData) -> Result<Option<FocusNotification>, String> {
     let status = data
         .agent_status
         .as_deref()
@@ -39,13 +80,7 @@ pub(crate) fn notification_from_event_json(
         return Ok(None);
     }
 
-    let Some(pane_id) = data
-        .pane_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-    else {
+    let Some(pane_id) = pane_id_from_data(&data) else {
         return Ok(None);
     };
 
@@ -66,7 +101,7 @@ pub(crate) fn notification_from_event_json(
     };
 
     let body = notification_body(&data);
-    let group = format!("herdr-{}", sanitize_group_id(&pane_id));
+    let group = notification_group_for_pane(&pane_id);
 
     Ok(Some(FocusNotification {
         pane_id,
@@ -76,6 +111,24 @@ pub(crate) fn notification_from_event_json(
         group,
         app_icon,
     }))
+}
+
+fn event_name<'a>(event: Option<&'a str>, data_type: Option<&'a str>) -> Option<&'a str> {
+    first_non_empty([event, data_type])
+}
+
+fn event_matches(event_name: Option<&str>, dotted: &str, snake: &str) -> bool {
+    event_name
+        .map(str::trim)
+        .is_some_and(|name| name == dotted || name == snake)
+}
+
+fn pane_id_from_data(data: &EventData) -> Option<String> {
+    data.pane_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 fn notification_body(data: &EventData) -> String {
@@ -137,9 +190,11 @@ mod tests {
     }
 
     #[test]
-    fn builds_done_notification_from_title() {
+    fn builds_done_notification_from_herdr_hook_event_json() {
         let json = r#"{
+            "event": "pane_agent_status_changed",
             "data": {
+                "type": "pane_agent_status_changed",
                 "pane_id": "p1",
                 "agent_status": "done",
                 "agent": "Codex",
@@ -153,6 +208,28 @@ mod tests {
         assert_eq!(notification.title, "Codex finished");
         assert_eq!(notification.body, "Implement plugin");
         assert!(notification.app_icon.is_some());
+    }
+
+    #[test]
+    fn builds_dismiss_action_from_pane_focused_event() {
+        let json = r#"{
+            "event": "pane_focused",
+            "data": {
+                "type": "pane_focused",
+                "pane_id": "w1:p3",
+                "workspace_id": "herdr"
+            }
+        }"#;
+
+        let action = event_action_from_event_json(json).unwrap().unwrap();
+
+        assert_eq!(
+            action,
+            PluginEventAction::DismissPane {
+                pane_id: "w1:p3".to_string()
+            }
+        );
+        assert!(notification_from_event_json(json).unwrap().is_none());
     }
 
     #[test]
@@ -174,6 +251,20 @@ mod tests {
             "data": {
                 "agent_status": "blocked",
                 "agent": "Codex"
+            }
+        }"#;
+
+        assert!(notification_from_event_json(json).unwrap().is_none());
+    }
+
+    #[test]
+    fn ignores_unrelated_events_even_if_they_have_status_like_fields() {
+        let json = r#"{
+            "event": "pane_focused",
+            "data": {
+                "type": "pane_focused",
+                "pane_id": "p1",
+                "agent_status": "blocked"
             }
         }"#;
 

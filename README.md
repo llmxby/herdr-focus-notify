@@ -11,6 +11,9 @@ Notifications are sent only when you are **not already looking at that pane**:
 - Herdr is not the frontmost app.
 - Herdr is frontmost, but another pane is focused.
 
+If you manually focus the pane later, Herdr's `pane.focused` event removes any
+still-visible notification for that pane.
+
 ## Requirements
 
 - macOS
@@ -35,7 +38,7 @@ herdr plugin link .
 Or install from GitHub:
 
 ```bash
-herdr plugin install yankewei/herdr-focus-notify
+herdr plugin install llmxby/herdr-focus-notify
 ```
 
 ## CLI

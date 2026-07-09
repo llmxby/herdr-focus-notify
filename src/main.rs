@@ -14,9 +14,10 @@ use std::process::ExitCode;
 
 use cli::{parse_cli_args, print_usage, CliAction};
 use config::{is_enabled, status_is_enabled};
-use event::notification_from_event_json;
+use event::{event_action_from_event_json, PluginEventAction};
 use executable::resolve_herdr_bin;
 use focus::{should_skip_notification, test_notification};
+use notification::notification_group_for_pane;
 use notifier::{resolve_notifier_bin, send_notification};
 use script::write_focus_script;
 
@@ -59,8 +60,15 @@ fn run() -> Result<(), String> {
                 Err(_) => return Ok(()),
             };
 
-            match notification_from_event_json(&event_json)? {
-                Some(notification) => notification,
+            match event_action_from_event_json(&event_json)? {
+                Some(PluginEventAction::Notify(notification)) => notification,
+                Some(PluginEventAction::DismissPane { pane_id }) => {
+                    let notifier_bin = resolve_notifier_bin()?;
+                    let group = notification_group_for_pane(&pane_id);
+                    notifier::remove_notification(&notifier_bin, &group)
+                        .map_err(|err| format!("failed to remove notification: {err}"))?;
+                    return Ok(());
+                }
                 None => return Ok(()),
             }
         }

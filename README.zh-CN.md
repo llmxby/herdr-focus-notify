@@ -11,6 +11,8 @@
 - 你当前在其它 App（Herdr 不在前台）
 - 你在 Herdr 里，但聚焦的是另一个 pane
 
+如果之后你手动切到对应 pane，插件会监听 Herdr 的 `pane.focused` 事件，自动关闭这个 pane 还停留着的通知。
+
 ## 前提条件
 
 - macOS
@@ -35,7 +37,7 @@ herdr plugin link .
 或从 GitHub 安装：
 
 ```bash
-herdr plugin install yankewei/herdr-focus-notify
+herdr plugin install llmxby/herdr-focus-notify
 ```
 
 ## CLI
