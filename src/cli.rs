@@ -2,6 +2,7 @@
 pub(crate) enum CliAction {
     Event,
     Test,
+    FocusLatest,
     Help,
     Version,
 }
@@ -17,6 +18,7 @@ where
         let arg = arg.as_ref();
         match arg {
             "--test" => set_action(&mut action, CliAction::Test, arg)?,
+            "--focus-latest" => set_action(&mut action, CliAction::FocusLatest, arg)?,
             "-h" | "--help" => set_action(&mut action, CliAction::Help, arg)?,
             "-V" | "--version" => set_action(&mut action, CliAction::Version, arg)?,
             _ => {
@@ -41,7 +43,7 @@ fn set_action(action: &mut CliAction, next: CliAction, arg: &str) -> Result<(), 
 
 pub(crate) fn print_usage() {
     println!(
-        "herdr-focus-notify {}\n\nUsage:\n  herdr-focus-notify\n  herdr-focus-notify --test\n\nOptions:\n  --test       Send a test focus notification\n  -h, --help   Show this help\n  -V, --version\n              Show the version",
+        "herdr-focus-notify {}\n\nUsage:\n  herdr-focus-notify\n  herdr-focus-notify --test\n  herdr-focus-notify --focus-latest\n\nOptions:\n  --test          Send a test focus notification\n  --focus-latest  Focus the most recent active notification pane\n  -h, --help      Show this help\n  -V, --version\n                 Show the version",
         env!("CARGO_PKG_VERSION")
     );
 }
@@ -57,6 +59,10 @@ mod tests {
             CliAction::Event
         );
         assert_eq!(parse_cli_args(["--test"]).unwrap(), CliAction::Test);
+        assert_eq!(
+            parse_cli_args(["--focus-latest"]).unwrap(),
+            CliAction::FocusLatest
+        );
         assert_eq!(parse_cli_args(["--help"]).unwrap(), CliAction::Help);
         assert_eq!(parse_cli_args(["-h"]).unwrap(), CliAction::Help);
         assert_eq!(parse_cli_args(["--version"]).unwrap(), CliAction::Version);

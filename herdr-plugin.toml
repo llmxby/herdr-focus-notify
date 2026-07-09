@@ -13,6 +13,11 @@ id = "test"
 title = "Send test focus notification"
 command = ["target/release/herdr-focus-notify", "--test"]
 
+[[actions]]
+id = "focus-latest"
+title = "Focus latest active notification pane"
+command = ["target/release/herdr-focus-notify", "--focus-latest"]
+
 [[events]]
 on = "pane.agent_status_changed"
 command = ["target/release/herdr-focus-notify"]

@@ -1,3 +1,4 @@
+mod activate;
 mod cli;
 mod config;
 mod event;
@@ -11,8 +12,10 @@ mod state;
 mod util;
 
 use std::env;
+use std::process::Command;
 use std::process::ExitCode;
 
+use activate::activate_configured_app;
 use cli::{parse_cli_args, print_usage, CliAction};
 use config::{is_enabled, status_is_enabled};
 use event::{event_action_from_event_json, PluginEventAction};
@@ -44,7 +47,7 @@ fn run() -> Result<(), String> {
             println!("herdr-focus-notify {}", env!("CARGO_PKG_VERSION"));
             return Ok(());
         }
-        CliAction::Event | CliAction::Test => {}
+        CliAction::Event | CliAction::Test | CliAction::FocusLatest => {}
     }
 
     if !is_enabled() {
@@ -52,6 +55,12 @@ fn run() -> Result<(), String> {
     }
 
     let herdr_bin = resolve_herdr_bin();
+
+    if action == CliAction::FocusLatest {
+        let notifier_bin = resolve_notifier_bin()?;
+        focus_latest_active_notification(&herdr_bin, &notifier_bin)?;
+        return Ok(());
+    }
 
     let notification = match action {
         CliAction::Test => test_notification(&herdr_bin),
@@ -74,7 +83,9 @@ fn run() -> Result<(), String> {
                 None => return Ok(()),
             }
         }
-        CliAction::Help | CliAction::Version => unreachable!("handled before notification setup"),
+        CliAction::Help | CliAction::Version | CliAction::FocusLatest => {
+            unreachable!("handled before notification setup")
+        }
     };
 
     if !status_is_enabled(&notification.status) {
@@ -98,6 +109,46 @@ fn run() -> Result<(), String> {
     }
 
     Ok(())
+}
+
+fn focus_latest_active_notification(herdr_bin: &str, notifier_bin: &str) -> Result<(), String> {
+    let Some(notification) = state::latest_active_notification()
+        .map_err(|err| format!("failed to load active notifications: {err}"))?
+    else {
+        return Ok(());
+    };
+
+    activate_configured_app()?;
+    focus_pane(herdr_bin, &notification.pane_id)?;
+
+    let remaining = state::dismiss_active_notification(&notification.pane_id)
+        .map_err(|err| format!("failed to update active notifications: {err}"))?;
+    notifier::remove_notification(notifier_bin, &notification.group)
+        .map_err(|err| format!("failed to remove notification: {err}"))?;
+
+    for notification in remaining {
+        if !status_is_enabled(&notification.status) {
+            continue;
+        }
+        deliver_notification(&notification, herdr_bin, notifier_bin, false)?;
+    }
+
+    Ok(())
+}
+
+fn focus_pane(herdr_bin: &str, pane_id: &str) -> Result<(), String> {
+    let status = Command::new(herdr_bin)
+        .arg("agent")
+        .arg("focus")
+        .arg(pane_id)
+        .status()
+        .map_err(|err| format!("failed to run herdr agent focus: {err}"))?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("herdr agent focus exited with {status}"))
+    }
 }
 
 fn dismiss_notification(

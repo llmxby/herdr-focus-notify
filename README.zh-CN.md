@@ -48,9 +48,18 @@ herdr plugin install llmxby/herdr-focus-notify
 herdr-focus-notify --help
 herdr-focus-notify --version
 herdr-focus-notify --test
+herdr-focus-notify --focus-latest
 ```
 
-`--help` 和 `--version` 会输出到 stdout。`--test` 会发送一条前台测试通知。配置错误或通知后端错误会输出到 stderr，并返回非零退出码。普通插件调用如果没有 `HERDR_PLUGIN_EVENT_JSON`，仍会安静地以 `0` 退出。
+`--help` 和 `--version` 会输出到 stdout。`--test` 会发送一条前台测试通知。`--focus-latest` 会执行与“点击最新一条仍然活跃的通知”相同的动作：按需激活 `HERDR_FOCUS_NOTIFY_ACTIVATE_APP`、执行 `herdr agent focus <pane>`、移除这条通知，并在需要时把更早的剩余通知补回。配置错误或通知后端错误会输出到 stderr，并返回非零退出码。普通插件调用如果没有 `HERDR_PLUGIN_EVENT_JSON`，仍会安静地以 `0` 退出。
+
+插件同时把这个能力暴露成了一个 Herdr action：
+
+```bash
+herdr plugin action invoke focus-latest --plugin herdr-focus-notify
+```
+
+后续无论你用 Raycast、Keyboard Maestro、Hammerspoon、skhd 还是别的全局快捷键工具，直接绑定这条命令通常最方便。
 
 ## 配置
 

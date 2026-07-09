@@ -53,9 +53,18 @@ herdr plugin install llmxby/herdr-focus-notify
 herdr-focus-notify --help
 herdr-focus-notify --version
 herdr-focus-notify --test
+herdr-focus-notify --focus-latest
 ```
 
-`--help` and `--version` print to stdout. `--test` sends a foreground test notification. Configuration or notification backend failures are printed to stderr and return a non-zero exit code. Normal plugin invocations without `HERDR_PLUGIN_EVENT_JSON` still exit quietly with `0`.
+`--help` and `--version` print to stdout. `--test` sends a foreground test notification. `--focus-latest` performs the same action as clicking the newest still-active notification: it optionally activates `HERDR_FOCUS_NOTIFY_ACTIVATE_APP`, runs `herdr agent focus <pane>`, removes that notification, and replays any older remaining notifications if needed. Configuration or notification backend failures are printed to stderr and return a non-zero exit code. Normal plugin invocations without `HERDR_PLUGIN_EVENT_JSON` still exit quietly with `0`.
+
+The plugin also exposes the same command as a Herdr action:
+
+```bash
+herdr plugin action invoke focus-latest --plugin herdr-focus-notify
+```
+
+That action is the easiest target for Raycast, Keyboard Maestro, Hammerspoon, skhd, or other global shortcut tools.
 
 ## Configuration
 

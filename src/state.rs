@@ -20,6 +20,10 @@ pub(crate) fn dismiss_active_notification(pane_id: &str) -> io::Result<Vec<Focus
     Ok(notifications)
 }
 
+pub(crate) fn latest_active_notification() -> io::Result<Option<FocusNotification>> {
+    Ok(load_active_notifications()?.into_iter().last())
+}
+
 fn upsert_active_notification(
     notifications: &mut Vec<FocusNotification>,
     notification: FocusNotification,
