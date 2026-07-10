@@ -1,4 +1,5 @@
 mod activate;
+mod away;
 mod cli;
 mod config;
 mod event;
@@ -7,6 +8,7 @@ mod focus;
 mod icons;
 mod notification;
 mod notifier;
+mod presence;
 mod script;
 mod state;
 mod util;
@@ -17,12 +19,13 @@ use std::process::ExitCode;
 
 use activate::activate_configured_app;
 use cli::{parse_cli_args, print_usage, CliAction};
-use config::{is_enabled, status_is_enabled};
+use config::{away_command, away_mode, away_recipients, is_enabled, status_is_enabled};
 use event::{event_action_from_event_json, PluginEventAction};
-use executable::resolve_herdr_bin;
+use executable::{resolve_herdr_bin, resolve_plugin_bin};
 use focus::{should_skip_notification, test_notification};
 use notification::notification_group_for_pane;
 use notifier::{resolve_notifier_bin, send_notification};
+use presence::should_use_away_delivery;
 use script::write_focus_script;
 
 fn main() -> ExitCode {
@@ -47,7 +50,7 @@ fn run() -> Result<(), String> {
             println!("herdr-focus-notify {}", env!("CARGO_PKG_VERSION"));
             return Ok(());
         }
-        CliAction::Event | CliAction::Test | CliAction::FocusLatest => {}
+        CliAction::Event | CliAction::Test | CliAction::FocusLatest | CliAction::OnClick(_) => {}
     }
 
     if !is_enabled() {
@@ -55,10 +58,17 @@ fn run() -> Result<(), String> {
     }
 
     let herdr_bin = resolve_herdr_bin();
+    let plugin_bin = resolve_plugin_bin();
+
+    if let CliAction::OnClick(pane_id) = action {
+        let notifier_bin = resolve_notifier_bin()?;
+        dismiss_notification(&pane_id, true, &herdr_bin, &plugin_bin, &notifier_bin)?;
+        return Ok(());
+    }
 
     if action == CliAction::FocusLatest {
         let notifier_bin = resolve_notifier_bin()?;
-        focus_latest_active_notification(&herdr_bin, &notifier_bin)?;
+        focus_latest_active_notification(&herdr_bin, &plugin_bin, &notifier_bin)?;
         return Ok(());
     }
 
@@ -77,13 +87,19 @@ fn run() -> Result<(), String> {
                     replay_remaining,
                 }) => {
                     let notifier_bin = resolve_notifier_bin()?;
-                    dismiss_notification(&pane_id, replay_remaining, &herdr_bin, &notifier_bin)?;
+                    dismiss_notification(
+                        &pane_id,
+                        replay_remaining,
+                        &herdr_bin,
+                        &plugin_bin,
+                        &notifier_bin,
+                    )?;
                     return Ok(());
                 }
                 None => return Ok(()),
             }
         }
-        CliAction::Help | CliAction::Version | CliAction::FocusLatest => {
+        CliAction::Help | CliAction::Version | CliAction::FocusLatest | CliAction::OnClick(_) => {
             unreachable!("handled before notification setup")
         }
     };
@@ -96,10 +112,21 @@ fn run() -> Result<(), String> {
         return Ok(());
     }
 
+    if try_deliver_away_notification(&notification)? {
+        if action == CliAction::Event {
+            state::save_active_notification(&notification)
+                .map_err(|err| format!("failed to save active notification: {err}"))?;
+        }
+        if away_mode() == "replace" {
+            return Ok(());
+        }
+    }
+
     let notifier_bin = resolve_notifier_bin()?;
     deliver_notification(
         &notification,
         &herdr_bin,
+        &plugin_bin,
         &notifier_bin,
         action == CliAction::Test,
     )?;
@@ -111,7 +138,37 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
-fn focus_latest_active_notification(herdr_bin: &str, notifier_bin: &str) -> Result<(), String> {
+fn try_deliver_away_notification(
+    notification: &notification::FocusNotification,
+) -> Result<bool, String> {
+    let mode = away_mode();
+    if mode == "off" {
+        return Ok(false);
+    }
+
+    if !should_use_away_delivery() {
+        return Ok(false);
+    }
+
+    let command = away_command().ok_or_else(|| {
+        "HERDR_FOCUS_NOTIFY_AWAY_COMMAND is required when away mode is enabled".to_string()
+    })?;
+    let recipients = away_recipients();
+    if recipients.is_empty() {
+        return Err(
+            "HERDR_FOCUS_NOTIFY_AWAY_RECIPIENTS is required when away mode is enabled".to_string(),
+        );
+    }
+
+    away::run_away_command(&command, &recipients, notification)?;
+    Ok(true)
+}
+
+fn focus_latest_active_notification(
+    herdr_bin: &str,
+    plugin_bin: &str,
+    notifier_bin: &str,
+) -> Result<(), String> {
     let Some(notification) = state::latest_active_notification()
         .map_err(|err| format!("failed to load active notifications: {err}"))?
     else {
@@ -130,7 +187,7 @@ fn focus_latest_active_notification(herdr_bin: &str, notifier_bin: &str) -> Resu
         if !status_is_enabled(&notification.status) {
             continue;
         }
-        deliver_notification(&notification, herdr_bin, notifier_bin, false)?;
+        deliver_notification(&notification, herdr_bin, plugin_bin, notifier_bin, false)?;
     }
 
     Ok(())
@@ -155,6 +212,7 @@ fn dismiss_notification(
     pane_id: &str,
     replay_remaining: bool,
     herdr_bin: &str,
+    plugin_bin: &str,
     notifier_bin: &str,
 ) -> Result<(), String> {
     let remaining = state::dismiss_active_notification(pane_id)
@@ -168,7 +226,7 @@ fn dismiss_notification(
             if !status_is_enabled(&notification.status) {
                 continue;
             }
-            deliver_notification(&notification, herdr_bin, notifier_bin, false)?;
+            deliver_notification(&notification, herdr_bin, plugin_bin, notifier_bin, false)?;
         }
     }
 
@@ -178,10 +236,11 @@ fn dismiss_notification(
 fn deliver_notification(
     notification: &notification::FocusNotification,
     herdr_bin: &str,
+    plugin_bin: &str,
     notifier_bin: &str,
     foreground: bool,
 ) -> Result<(), String> {
-    let script_path = write_focus_script(notification, herdr_bin, notifier_bin)
+    let script_path = write_focus_script(notification, herdr_bin, plugin_bin, notifier_bin)
         .map_err(|err| format!("failed to write focus script: {err}"))?;
 
     send_notification(&script_path, foreground)

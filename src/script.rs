@@ -12,6 +12,7 @@ use crate::util::shell_quote;
 pub(crate) fn write_focus_script(
     notification: &FocusNotification,
     herdr_bin: &str,
+    plugin_bin: &str,
     notifier_bin: &str,
 ) -> io::Result<PathBuf> {
     let state_dir = env::var_os("HERDR_PLUGIN_STATE_DIR")
@@ -27,6 +28,7 @@ pub(crate) fn write_focus_script(
     notification.group.hash(&mut hasher);
     notification.app_icon.hash(&mut hasher);
     herdr_bin.hash(&mut hasher);
+    plugin_bin.hash(&mut hasher);
     notifier_bin.hash(&mut hasher);
     alerter_timeout_secs().hash(&mut hasher);
     activate_app().hash(&mut hasher);
@@ -37,6 +39,7 @@ pub(crate) fn write_focus_script(
     let script = focus_script_content(
         notification,
         herdr_bin,
+        plugin_bin,
         notifier_bin,
         debug_log_path.as_deref(),
     );
@@ -50,12 +53,14 @@ pub(crate) fn write_focus_script(
 fn focus_script_content(
     notification: &FocusNotification,
     herdr_bin: &str,
+    plugin_bin: &str,
     notifier_bin: &str,
     debug_log_path: Option<&Path>,
 ) -> String {
     alerter_focus_script(
         notification,
         herdr_bin,
+        plugin_bin,
         notifier_bin,
         alerter_timeout_secs(),
         activation_command().as_deref(),
@@ -66,6 +71,7 @@ fn focus_script_content(
 fn alerter_focus_script(
     notification: &FocusNotification,
     herdr_bin: &str,
+    plugin_bin: &str,
     notifier_bin: &str,
     timeout_secs: u64,
     activate_command: Option<&str>,
@@ -76,6 +82,7 @@ fn alerter_focus_script(
     let group_q = shell_quote(&notification.group);
     let pane_q = shell_quote(&notification.pane_id);
     let herdr_q = shell_quote(herdr_bin);
+    let plugin_q = shell_quote(plugin_bin);
     let notifier_q = shell_quote(notifier_bin);
     let app_icon_args = notification
         .app_icon
@@ -115,10 +122,11 @@ fn alerter_focus_script(
             script.push_str("status=0\n");
             script.push_str("case \"$result\" in\n");
             script.push_str(&format!(
-                "  Focus|@ACTIONCLICKED|@CONTENTCLICKED)\n{activate}    {herdr} agent focus {pane} >> {log} 2>&1\n    status=$?\n    printf '%s focus exited %s\\n' \"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\" \"$status\" >> {log} 2>&1\n    ;;\n",
+                "  Focus|@ACTIONCLICKED|@CONTENTCLICKED)\n{activate}    {herdr} agent focus {pane} >> {log} 2>&1\n    status=$?\n    printf '%s focus exited %s\\n' \"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\" \"$status\" >> {log} 2>&1\n    {plugin} --on-click {pane} >> {log} 2>&1\n    status=$?\n    printf '%s on-click exited %s\\n' \"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\" \"$status\" >> {log} 2>&1\n    ;;\n",
                 activate = activation_script(activate_command, Some(log_q.as_str())),
                 herdr = herdr_q,
                 pane = pane_q,
+                plugin = plugin_q,
                 log = log_q,
             ));
             script.push_str("esac\n");
@@ -130,10 +138,11 @@ fn alerter_focus_script(
             script.push_str("fi\n");
             script.push_str("case \"$result\" in\n");
             script.push_str(&format!(
-                "  Focus|@ACTIONCLICKED|@CONTENTCLICKED)\n{activate}    exec {herdr} agent focus {pane}\n    ;;\n",
+                "  Focus|@ACTIONCLICKED|@CONTENTCLICKED)\n{activate}    {herdr} agent focus {pane} >/dev/null 2>&1\n    {plugin} --on-click {pane} >/dev/null 2>&1\n    ;;\n",
                 activate = activation_script(activate_command, None),
                 herdr = herdr_q,
                 pane = pane_q,
+                plugin = plugin_q,
             ));
             script.push_str("esac\n");
         }
@@ -211,6 +220,7 @@ mod tests {
         let script = focus_script_content(
             &notification,
             "/tmp/herdr bin",
+            "/tmp/herdr-focus-notify",
             "/opt/homebrew/bin/alerter",
             Some(Path::new("/tmp/focus clicks.log")),
         );
@@ -219,6 +229,8 @@ mod tests {
         assert!(script.contains(">> '/tmp/focus clicks.log' 2>&1"));
         assert!(script.contains("'/tmp/herdr bin' agent focus 'pane '\\'' one'"));
         assert!(script.contains("focus exited %s"));
+        assert!(script.contains("'/tmp/herdr-focus-notify' --on-click 'pane '\\'' one'"));
+        assert!(script.contains("on-click exited %s"));
         assert!(script.contains("exit \"$status\""));
     }
 
@@ -227,6 +239,7 @@ mod tests {
         let script = focus_script_content(
             &sample_notification(),
             "/usr/local/bin/herdr",
+            "/usr/local/bin/herdr-focus-notify",
             "/opt/homebrew/bin/alerter",
             None,
         );
@@ -241,7 +254,8 @@ mod tests {
         assert!(script.contains("notifier_status=$?"));
         assert!(script.contains("exit \"$notifier_status\""));
         assert!(script.contains("Focus|@ACTIONCLICKED|@CONTENTCLICKED)"));
-        assert!(script.contains("exec '/usr/local/bin/herdr' agent focus 'w1:p3'"));
+        assert!(script.contains("'/usr/local/bin/herdr' agent focus 'w1:p3' >/dev/null 2>&1"));
+        assert!(script.contains("'/usr/local/bin/herdr-focus-notify' --on-click 'w1:p3'"));
     }
 
     #[test]
@@ -249,6 +263,7 @@ mod tests {
         let script = alerter_focus_script(
             &sample_notification(),
             "/usr/local/bin/herdr",
+            "/usr/local/bin/herdr-focus-notify",
             "/opt/homebrew/bin/alerter",
             120,
             None,
@@ -263,6 +278,7 @@ mod tests {
         let script = alerter_focus_script(
             &sample_notification(),
             "/usr/local/bin/herdr",
+            "/usr/local/bin/herdr-focus-notify",
             "/opt/homebrew/bin/alerter",
             0,
             None,
@@ -277,6 +293,7 @@ mod tests {
         let script = alerter_focus_script(
             &sample_notification(),
             "/usr/local/bin/herdr",
+            "/usr/local/bin/herdr-focus-notify",
             "/opt/homebrew/bin/alerter",
             1800,
             None,
@@ -289,6 +306,7 @@ mod tests {
         assert!(script.contains("status=0\n"));
         assert!(script.contains("focus exited %s"));
         assert!(script.contains("Focus|@ACTIONCLICKED|@CONTENTCLICKED)"));
+        assert!(script.contains("'/usr/local/bin/herdr-focus-notify' --on-click 'w1:p3'"));
         assert!(!script.contains("content click ignored"));
     }
 
@@ -297,6 +315,7 @@ mod tests {
         let script = alerter_focus_script(
             &sample_notification(),
             "/usr/local/bin/herdr",
+            "/usr/local/bin/herdr-focus-notify",
             "/opt/homebrew/bin/alerter",
             3600,
             Some("open -a 'kitty'"),
@@ -304,7 +323,8 @@ mod tests {
         );
 
         assert!(script.contains("open -a 'kitty' >/dev/null 2>&1"));
-        assert!(script.contains("exec '/usr/local/bin/herdr' agent focus 'w1:p3'"));
+        assert!(script.contains("'/usr/local/bin/herdr' agent focus 'w1:p3' >/dev/null 2>&1"));
+        assert!(script.contains("'/usr/local/bin/herdr-focus-notify' --on-click 'w1:p3'"));
     }
 
     #[test]

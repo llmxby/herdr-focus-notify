@@ -91,8 +91,65 @@ HERDR_FOCUS_NOTIFY_ACTIVATE_APP=kitty
 | `HERDR_FOCUS_NOTIFY_NOTIFIER` | 通知后端路径；找不到可执行通知后端时会报错 | 自动查找 `alerter` |
 | `HERDR_FOCUS_NOTIFY_ACTIVATE_APP` | 点击通知时激活的终端 app 名或 `.app` 路径 | 无 |
 | `HERDR_FOCUS_NOTIFY_TIMEOUT` | 通知自动消失时间（秒），`0` 表示不自动消失 | `3600` |
+| `HERDR_FOCUS_NOTIFY_AWAY_MODE` | 离席兜底行为：`off`、`replace` 或 `also` | `off` |
+| `HERDR_FOCUS_NOTIFY_AWAY_WHEN` | 何时启用离席兜底；当前仅支持 `locked` | `locked` |
+| `HERDR_FOCUS_NOTIFY_AWAY_COMMAND` | 离席时执行的外部命令 | 无 |
+| `HERDR_FOCUS_NOTIFY_AWAY_RECIPIENTS` | 传给外部命令的逗号分隔接收人标识 | 无 |
 
 如果没有配置 `ACTIVATE_APP`，通知点击后仍会执行 `herdr agent focus <pane>`，但插件无法可靠判断前台 App 是否就是 Herdr 所在终端，因此可能会多发通知。
+
+### 离席兜底
+
+如果你想在人在电脑前时继续收桌面通知，但在 Mac 已锁屏时改为走 IM / 机器人通知，可以这样配置：
+
+```env
+HERDR_FOCUS_NOTIFY_AWAY_MODE=replace
+HERDR_FOCUS_NOTIFY_AWAY_WHEN=locked
+HERDR_FOCUS_NOTIFY_AWAY_COMMAND=/absolute/path/to/repo/helpers/dx-notify-helper/run.sh
+HERDR_FOCUS_NOTIFY_AWAY_RECIPIENTS=linmiaobin
+```
+
+当满足离席条件时，插件会给该命令注入这些环境变量：
+
+- `HERDR_FOCUS_NOTIFY_TITLE`
+- `HERDR_FOCUS_NOTIFY_BODY`
+- `HERDR_FOCUS_NOTIFY_STATUS`
+- `HERDR_FOCUS_NOTIFY_PANE_ID`
+- `HERDR_FOCUS_NOTIFY_GROUP`
+- `HERDR_FOCUS_NOTIFY_RECIPIENTS`
+
+`replace` 表示只执行外部命令、不再发桌面通知；`also` 表示两边都发。如果锁屏状态无法检测，插件会保守地回退到原本的桌面通知路径。
+
+### 仓库内置的大象 helper
+
+当前仓库已经内置了一个 Java 版 helper，目录在 `helpers/dx-notify-helper/`，它会复用内部已经验证过的那套链路发大象机器人单聊：
+
+1. `DX_CLIENT_ID` + `DX_CLIENT_SECRET` → 通过 SSO OIDC client credentials 获取 token
+2. MIS 列表 → 查询大象 UID
+3. 调用 `sendChatMsgByRobot` 发送 Markdown 单聊消息
+
+先构建一次：
+
+```bash
+helpers/dx-notify-helper/build.sh
+```
+
+然后把 `HERDR_FOCUS_NOTIFY_AWAY_COMMAND` 指到：
+
+```bash
+helpers/dx-notify-helper/run.sh
+```
+
+启动 Herdr / 插件动作的 shell 环境里需要提供这些变量：
+
+```bash
+export DX_CLIENT_ID=your_client_id
+export DX_CLIENT_SECRET=your_client_secret
+# 可选
+export DX_AUDIENCE=xm-xai
+```
+
+helper 会读取主插件注入的 away 环境变量，并把标题、正文、状态、pane id 组织成 Markdown 单聊消息发到大象。
 
 排障时可以临时配置 `HERDR_FOCUS_NOTIFY_DEBUG=1`；需要暂停插件时可以配置 `HERDR_FOCUS_NOTIFY_ENABLED=0`。
 

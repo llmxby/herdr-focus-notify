@@ -96,8 +96,65 @@ Configuring `ACTIVATE_APP` is recommended. It is used to bring your terminal app
 | `HERDR_FOCUS_NOTIFY_NOTIFIER` | Notification backend path. The plugin reports an error if no executable notifier is found. | Auto-detect `alerter` |
 | `HERDR_FOCUS_NOTIFY_ACTIVATE_APP` | Terminal app name or `.app` path to activate when a notification is clicked. | None |
 | `HERDR_FOCUS_NOTIFY_TIMEOUT` | Seconds before a notification auto-dismisses. Set to `0` to keep it until dismissed. | `3600` |
+| `HERDR_FOCUS_NOTIFY_AWAY_MODE` | Away fallback behavior: `off`, `replace`, or `also`. | `off` |
+| `HERDR_FOCUS_NOTIFY_AWAY_WHEN` | When to use the away fallback. Currently only `locked` is supported. | `locked` |
+| `HERDR_FOCUS_NOTIFY_AWAY_COMMAND` | External command to run for away delivery. | None |
+| `HERDR_FOCUS_NOTIFY_AWAY_RECIPIENTS` | Comma-separated recipient identifiers passed to the away command. | None |
 
 If `ACTIVATE_APP` is not configured, clicking a notification still runs `herdr agent focus <pane>`, but the plugin cannot reliably tell whether the frontmost app is the terminal that hosts Herdr, so it may send extra notifications.
+
+### Away fallback
+
+If you want desktop alerts while you are active, but an IM/bot fallback when your Mac session is locked, configure an away command:
+
+```env
+HERDR_FOCUS_NOTIFY_AWAY_MODE=replace
+HERDR_FOCUS_NOTIFY_AWAY_WHEN=locked
+HERDR_FOCUS_NOTIFY_AWAY_COMMAND=/absolute/path/to/repo/helpers/dx-notify-helper/run.sh
+HERDR_FOCUS_NOTIFY_AWAY_RECIPIENTS=linmiaobin
+```
+
+When the away condition matches, the plugin exports these environment variables to the command and executes it:
+
+- `HERDR_FOCUS_NOTIFY_TITLE`
+- `HERDR_FOCUS_NOTIFY_BODY`
+- `HERDR_FOCUS_NOTIFY_STATUS`
+- `HERDR_FOCUS_NOTIFY_PANE_ID`
+- `HERDR_FOCUS_NOTIFY_GROUP`
+- `HERDR_FOCUS_NOTIFY_RECIPIENTS`
+
+`replace` skips the desktop notification and only runs the away command. `also` runs both. If the lock state cannot be detected, the plugin falls back to the normal desktop notification path.
+
+### Bundled Daxiang helper
+
+This repository includes a Java helper under `helpers/dx-notify-helper/` that sends a Daxiang robot single-chat message using the same flow already proven in internal tooling:
+
+1. `DX_CLIENT_ID` + `DX_CLIENT_SECRET` → SSO OIDC client credentials token
+2. recipient MIS list → Daxiang UID list
+3. `sendChatMsgByRobot` → Markdown single chat
+
+Build it once:
+
+```bash
+helpers/dx-notify-helper/build.sh
+```
+
+Then point `HERDR_FOCUS_NOTIFY_AWAY_COMMAND` at:
+
+```bash
+helpers/dx-notify-helper/run.sh
+```
+
+The helper requires these environment variables in the shell or launcher that starts Herdr/plugin actions:
+
+```bash
+export DX_CLIENT_ID=your_client_id
+export DX_CLIENT_SECRET=your_client_secret
+# optional
+export DX_AUDIENCE=xm-xai
+```
+
+The helper reads the away command env injected by the plugin and sends a Markdown message containing the title, body, status, and pane id.
 
 For troubleshooting, temporarily set `HERDR_FOCUS_NOTIFY_DEBUG=1`. To pause the plugin without unlinking it, set `HERDR_FOCUS_NOTIFY_ENABLED=0`.
 

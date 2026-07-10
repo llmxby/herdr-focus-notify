@@ -9,6 +9,14 @@ pub(crate) fn resolve_herdr_bin() -> String {
         .unwrap_or_else(|| "herdr".to_string())
 }
 
+pub(crate) fn resolve_plugin_bin() -> String {
+    env::current_exe()
+        .ok()
+        .filter(|path| is_executable_file(path))
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "herdr-focus-notify".to_string())
+}
+
 pub(crate) fn find_executable(name: &str, candidate_paths: Vec<PathBuf>) -> Option<String> {
     executable_in_path(name)
         .or_else(|| {

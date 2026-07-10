@@ -1,8 +1,9 @@
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CliAction {
     Event,
     Test,
     FocusLatest,
+    OnClick(String),
     Help,
     Version,
 }
@@ -13,12 +14,24 @@ where
     S: AsRef<str>,
 {
     let mut action = CliAction::Event;
+    let mut args = args.into_iter().peekable();
 
-    for arg in args {
+    while let Some(arg) = args.next() {
         let arg = arg.as_ref();
         match arg {
             "--test" => set_action(&mut action, CliAction::Test, arg)?,
             "--focus-latest" => set_action(&mut action, CliAction::FocusLatest, arg)?,
+            "--on-click" => {
+                let pane_id = args
+                    .next()
+                    .ok_or_else(|| "--on-click requires a pane id".to_string())?
+                    .as_ref()
+                    .to_string();
+                if pane_id.is_empty() {
+                    return Err("--on-click requires a pane id".to_string());
+                }
+                set_action(&mut action, CliAction::OnClick(pane_id), arg)?;
+            }
             "-h" | "--help" => set_action(&mut action, CliAction::Help, arg)?,
             "-V" | "--version" => set_action(&mut action, CliAction::Version, arg)?,
             _ => {
@@ -43,7 +56,7 @@ fn set_action(action: &mut CliAction, next: CliAction, arg: &str) -> Result<(), 
 
 pub(crate) fn print_usage() {
     println!(
-        "herdr-focus-notify {}\n\nUsage:\n  herdr-focus-notify\n  herdr-focus-notify --test\n  herdr-focus-notify --focus-latest\n\nOptions:\n  --test          Send a test focus notification\n  --focus-latest  Focus the most recent active notification pane\n  -h, --help      Show this help\n  -V, --version\n                 Show the version",
+        "herdr-focus-notify {}\n\nUsage:\n  herdr-focus-notify\n  herdr-focus-notify --test\n  herdr-focus-notify --focus-latest\n  herdr-focus-notify --on-click <pane-id>\n\nOptions:\n  --test          Send a test focus notification\n  --focus-latest  Focus the most recent active notification pane\n  --on-click      Dismiss the clicked pane's notification and replay others\n  -h, --help      Show this help\n  -V, --version\n                 Show the version",
         env!("CARGO_PKG_VERSION")
     );
 }
@@ -63,6 +76,11 @@ mod tests {
             parse_cli_args(["--focus-latest"]).unwrap(),
             CliAction::FocusLatest
         );
+        assert_eq!(
+            parse_cli_args(["--on-click", "w1:p3"]).unwrap(),
+            CliAction::OnClick("w1:p3".to_string())
+        );
+        assert!(parse_cli_args(["--on-click"]).is_err());
         assert_eq!(parse_cli_args(["--help"]).unwrap(), CliAction::Help);
         assert_eq!(parse_cli_args(["-h"]).unwrap(), CliAction::Help);
         assert_eq!(parse_cli_args(["--version"]).unwrap(), CliAction::Version);

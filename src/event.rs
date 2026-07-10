@@ -45,7 +45,7 @@ pub(crate) fn event_action_from_event_json(
         return Ok(
             pane_id_from_data(&data).map(|pane_id| PluginEventAction::DismissPane {
                 pane_id,
-                replay_remaining: true,
+                replay_remaining: false,
             }),
         );
     }
@@ -253,7 +253,7 @@ mod tests {
             action,
             PluginEventAction::DismissPane {
                 pane_id: "w1:p3".to_string(),
-                replay_remaining: true,
+                replay_remaining: false,
             }
         );
         assert!(notification_from_event_json(json).unwrap().is_none());

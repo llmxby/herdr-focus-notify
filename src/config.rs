@@ -46,9 +46,43 @@ pub(crate) fn activate_app() -> Option<String> {
     config_var("HERDR_FOCUS_NOTIFY_ACTIVATE_APP")
 }
 
+pub(crate) fn away_mode() -> String {
+    config_var("HERDR_FOCUS_NOTIFY_AWAY_MODE")
+        .unwrap_or_else(|| "off".to_string())
+        .trim()
+        .to_ascii_lowercase()
+}
+
+pub(crate) fn away_when() -> String {
+    config_var("HERDR_FOCUS_NOTIFY_AWAY_WHEN")
+        .unwrap_or_else(|| "locked".to_string())
+        .trim()
+        .to_ascii_lowercase()
+}
+
+pub(crate) fn away_command() -> Option<String> {
+    config_var("HERDR_FOCUS_NOTIFY_AWAY_COMMAND")
+}
+
+pub(crate) fn away_recipients() -> Vec<String> {
+    parse_csv_list(config_var("HERDR_FOCUS_NOTIFY_AWAY_RECIPIENTS"))
+}
+
 pub(crate) fn parse_timeout_secs(raw: Option<String>) -> u64 {
     raw.and_then(|v| v.trim().parse::<u64>().ok())
         .unwrap_or(3600)
+}
+
+fn parse_csv_list(raw: Option<String>) -> Vec<String> {
+    raw.map(|value| {
+        value
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .collect()
+    })
+    .unwrap_or_default()
 }
 
 pub(crate) fn config_var(key: &str) -> Option<String> {
@@ -169,6 +203,10 @@ mod tests {
             HERDR_FOCUS_NOTIFY_NOTIFIER="/opt/homebrew/bin/alerter"
             HERDR_FOCUS_NOTIFY_STATUSES='blocked,done'
             HERDR_FOCUS_NOTIFY_ACTIVATE_APP=kitty # inline comment
+            HERDR_FOCUS_NOTIFY_AWAY_MODE=replace
+            HERDR_FOCUS_NOTIFY_AWAY_WHEN=locked
+            HERDR_FOCUS_NOTIFY_AWAY_COMMAND='/usr/local/bin/dx-notify-helper'
+            HERDR_FOCUS_NOTIFY_AWAY_RECIPIENTS='alice,bob'
             HERDR_FOCUS_NOTIFY_TITLE="line\nnext"
             "#,
         );
@@ -186,6 +224,22 @@ mod tests {
             "kitty"
         );
         assert_eq!(
+            values.get("HERDR_FOCUS_NOTIFY_AWAY_MODE").unwrap(),
+            "replace"
+        );
+        assert_eq!(
+            values.get("HERDR_FOCUS_NOTIFY_AWAY_WHEN").unwrap(),
+            "locked"
+        );
+        assert_eq!(
+            values.get("HERDR_FOCUS_NOTIFY_AWAY_COMMAND").unwrap(),
+            "/usr/local/bin/dx-notify-helper"
+        );
+        assert_eq!(
+            values.get("HERDR_FOCUS_NOTIFY_AWAY_RECIPIENTS").unwrap(),
+            "alice,bob"
+        );
+        assert_eq!(
             values.get("HERDR_FOCUS_NOTIFY_TITLE").unwrap(),
             "line\nnext"
         );
@@ -196,5 +250,14 @@ mod tests {
         let values = parse_env_file("TOKEN=abc#123\n");
 
         assert_eq!(values.get("TOKEN").unwrap(), "abc#123");
+    }
+
+    #[test]
+    fn parses_csv_recipient_list() {
+        assert_eq!(
+            parse_csv_list(Some(" alice, bob ,, carol ".to_string())),
+            vec!["alice".to_string(), "bob".to_string(), "carol".to_string()]
+        );
+        assert!(parse_csv_list(None).is_empty());
     }
 }

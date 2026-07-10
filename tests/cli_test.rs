@@ -11,6 +11,7 @@ fn help_and_version_print_to_stdout() {
     assert!(help.status.success());
     assert!(String::from_utf8_lossy(&help.stdout).contains("Usage:"));
     assert!(String::from_utf8_lossy(&help.stdout).contains("--focus-latest"));
+    assert!(String::from_utf8_lossy(&help.stdout).contains("--on-click"));
     assert!(help.stderr.is_empty());
 
     let version = binary().arg("--version").output().unwrap();
@@ -88,7 +89,7 @@ fn pane_focused_event_removes_matching_notification_group() {
 }
 
 #[test]
-fn pane_focused_event_replays_other_active_notifications() {
+fn pane_focused_event_dismisses_only_the_focused_pane_without_replaying_others() {
     let dir = temp_test_dir();
     std::fs::create_dir_all(&dir).unwrap();
     let fake_notifier = dir.join("alerter");
@@ -133,6 +134,67 @@ fn pane_focused_event_replays_other_active_notifications() {
             "HERDR_PLUGIN_EVENT_JSON",
             r#"{"event":"pane_focused","data":{"type":"pane_focused","pane_id":"p1"}}"#,
         )
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let content = std::fs::read_to_string(&log).unwrap();
+    assert!(content.contains("--remove\nherdr-p1"));
+    assert!(
+        !content.contains("herdr-p2"),
+        "pane.focused must not re-deliver other panes' notifications: {content}"
+    );
+    let active = std::fs::read_to_string(dir.join("active-notifications.json")).unwrap();
+    assert!(!active.contains("\"pane_id\": \"p1\""));
+    assert!(active.contains("\"pane_id\": \"p2\""));
+
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn on_click_dismisses_clicked_pane_and_replays_other_active_notifications() {
+    let dir = temp_test_dir();
+    std::fs::create_dir_all(&dir).unwrap();
+    let fake_notifier = dir.join("alerter");
+    let log = dir.join("args.log");
+    std::fs::write(
+        &fake_notifier,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" >> {}\n",
+            shell_quote(log.to_string_lossy().as_ref())
+        ),
+    )
+    .unwrap();
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut permissions = std::fs::metadata(&fake_notifier).unwrap().permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&fake_notifier, permissions).unwrap();
+    }
+
+    for pane_id in ["p1", "p2"] {
+        let event_json = format!(
+            r#"{{"event":"pane_agent_status_changed","data":{{"type":"pane_agent_status_changed","pane_id":"{pane_id}","workspace_id":"work","agent_status":"blocked","agent":"Codex","title":"Task {pane_id}"}}}}"#
+        );
+        let output = binary()
+            .env("HERDR_FOCUS_NOTIFY_NOTIFIER", &fake_notifier)
+            .env("HERDR_PLUGIN_STATE_DIR", &dir)
+            .env("HERDR_PLUGIN_EVENT_JSON", event_json)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+    }
+    wait_for_log_contains(&log, "herdr-p2");
+    std::fs::write(&log, "").unwrap();
+
+    let output = binary()
+        .arg("--on-click")
+        .arg("p1")
+        .env("HERDR_FOCUS_NOTIFY_NOTIFIER", &fake_notifier)
+        .env("HERDR_PLUGIN_STATE_DIR", &dir)
         .output()
         .unwrap();
 
@@ -227,6 +289,83 @@ fn focus_latest_focuses_newest_active_notification_and_removes_it() {
     let active_after = std::fs::read_to_string(dir.join("active-notifications.json")).unwrap();
     assert!(active_after.contains("\"pane_id\": \"p1\""));
     assert!(!active_after.contains("\"pane_id\": \"p2\""));
+
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn locked_away_replace_runs_external_command_instead_of_desktop_notification() {
+    let dir = temp_test_dir();
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let fake_away = dir.join("away-helper");
+    let away_log = dir.join("away.log");
+    std::fs::write(
+        &fake_away,
+        format!(
+            "#!/bin/sh\nprintf 'title=%s\\nbody=%s\\nstatus=%s\\npane=%s\\nrecipients=%s\\n' \\
+\"$HERDR_FOCUS_NOTIFY_TITLE\" \\
+\"$HERDR_FOCUS_NOTIFY_BODY\" \\
+\"$HERDR_FOCUS_NOTIFY_STATUS\" \\
+\"$HERDR_FOCUS_NOTIFY_PANE_ID\" \\
+\"$HERDR_FOCUS_NOTIFY_RECIPIENTS\" > {}\n",
+            shell_quote(away_log.to_string_lossy().as_ref())
+        ),
+    )
+    .unwrap();
+
+    let fake_notifier = dir.join("alerter");
+    let notifier_log = dir.join("notifier.log");
+    std::fs::write(
+        &fake_notifier,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\n",
+            shell_quote(notifier_log.to_string_lossy().as_ref())
+        ),
+    )
+    .unwrap();
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        for path in [&fake_away, &fake_notifier] {
+            let mut permissions = std::fs::metadata(path).unwrap().permissions();
+            permissions.set_mode(0o700);
+            std::fs::set_permissions(path, permissions).unwrap();
+        }
+    }
+
+    let output = binary()
+        .env("HERDR_FOCUS_NOTIFY_AWAY_MODE", "replace")
+        .env("HERDR_FOCUS_NOTIFY_AWAY_WHEN", "locked")
+        .env("HERDR_FOCUS_NOTIFY_AWAY_COMMAND", &fake_away)
+        .env("HERDR_FOCUS_NOTIFY_AWAY_RECIPIENTS", "linmiaobin")
+        .env("HERDR_FOCUS_NOTIFY_NOTIFIER", &fake_notifier)
+        .env(
+            "HERDR_PLUGIN_EVENT_JSON",
+            r#"{"event":"pane.agent_status_changed","data":{"type":"pane_agent_status_changed","pane_id":"w1:p3","workspace_id":"herdr","agent_status":"blocked","agent":"codex","display_agent":"Codex","title":"Implement plugin","custom_status":"Needs an answer"}}"#,
+        )
+        .env("HERDR_FOCUS_NOTIFY_TEST_SESSION_LOCKED", "1")
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let away_content = std::fs::read_to_string(&away_log).unwrap();
+    assert!(away_content.contains("title=Codex needs attention: Needs an answer"));
+    assert!(away_content.contains("status=blocked"));
+    assert!(away_content.contains("pane=w1:p3"));
+    assert!(away_content.contains("recipients=linmiaobin"));
+    assert!(
+        !notifier_log.exists()
+            || std::fs::read_to_string(&notifier_log)
+                .unwrap_or_default()
+                .is_empty()
+    );
 
     std::fs::remove_dir_all(dir).unwrap();
 }
